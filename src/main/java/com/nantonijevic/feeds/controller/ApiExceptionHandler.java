@@ -1,5 +1,7 @@
 package com.nantonijevic.feeds.controller;
 
+import java.util.Comparator;
+
 import com.nantonijevic.feeds.dto.ApiError;
 import com.nantonijevic.feeds.exception.FeedNotFoundException;
 import com.nantonijevic.feeds.exception.InvalidFeedIdException;
@@ -29,6 +31,7 @@ public class ApiExceptionHandler {
     ApiError handleValidation(WebExchangeBindException exception) {
         return exception.getFieldErrors()
                 .stream()
+                .sorted(Comparator.comparing(error -> error.getField()))
                 .findFirst()
                 .map(error -> new ApiError(
                         error.getField() + " " + error.getDefaultMessage()

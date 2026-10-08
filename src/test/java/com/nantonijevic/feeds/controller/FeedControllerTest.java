@@ -129,6 +129,14 @@ class FeedControllerTest {
     }
 
     @Test
+    void rejectsMissingUrlAndTitleDeterministically() {
+        assertBadRequest(
+                "{}",
+                "title must not be blank"
+        );
+    }
+
+    @Test
     void returnsExistingFeed() {
         Feed feed = new Feed(
                 ID,
