@@ -3,6 +3,7 @@ package com.nantonijevic.feeds.controller;
 import java.util.Comparator;
 
 import com.nantonijevic.feeds.dto.ApiError;
+import com.nantonijevic.feeds.exception.DuplicateFeedUrlException;
 import com.nantonijevic.feeds.exception.FeedNotFoundException;
 import com.nantonijevic.feeds.exception.InvalidFeedIdException;
 import org.springframework.http.HttpStatus;
@@ -23,6 +24,14 @@ public class ApiExceptionHandler {
     @ExceptionHandler(InvalidFeedIdException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     ApiError handleInvalidId(InvalidFeedIdException exception) {
+        return new ApiError(exception.getMessage());
+    }
+
+    @ExceptionHandler(DuplicateFeedUrlException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    ApiError handleDuplicateUrl(
+            DuplicateFeedUrlException exception
+    ) {
         return new ApiError(exception.getMessage());
     }
 

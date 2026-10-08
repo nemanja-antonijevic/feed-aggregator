@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.mongodb.core.ReactiveMongoTemplate;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -36,12 +37,19 @@ class FeedServiceTest {
     @Mock
     private FeedRepository feedRepository;
 
+    @Mock
+    private ReactiveMongoTemplate reactiveMongoTemplate;
+
     private FeedService feedService;
 
     @BeforeEach
     void setUp() {
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
-        feedService = new FeedService(feedRepository, clock);
+        feedService = new FeedService(
+                feedRepository,
+                clock,
+                reactiveMongoTemplate
+        );
     }
 
     @Test
