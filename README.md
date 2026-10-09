@@ -1,13 +1,14 @@
 # feed-aggregator
 
 Reactive RSS/feed aggregator built as a practice ground for MongoDB and Reactor/WebFlux.
-The current scope is feed management (M1). Fetching and parsing feeds comes in later milestones.
+The current scope is feed management (M1) and manual fetching of a single feed (M2). Periodic fetching comes in M3.
 
 ## Stack
 
 - Java 21, Spring Boot 4.1.1
 - Spring WebFlux (Netty), Reactor
 - Spring Data MongoDB Reactive, MongoDB 8 as a single-node replica set
+- Rome 2.1.0 for RSS and Atom parsing, `WebClient` for downloading
 - Testcontainers for integration tests
 
 ## Running locally
@@ -68,6 +69,36 @@ All bodies are JSON. Errors always use the shape `{"message": "..."}`, except fo
 | `GET` | `/feeds` | `200`, JSON array of feeds (empty array if none) | none |
 | `GET` | `/feeds/{id}` | `200`, body = feed | `400` malformed id, `404` not found |
 | `DELETE` | `/feeds/{id}` | `204 No Content`, empty body | `400` malformed id, `404` not found |
+| `POST` | `/feeds/{id}/fetch` | `200`, body = fetch result | `400` malformed id, `404` not found, `422` invalid source, `502` source error, `504` source timeout, `500` item write failed |
+
+### Fetch result
+
+```json
+{
+  "fetched": 2,
+  "inserted": 1,
+  "duplicates": 1
+}
+```
+
+| Field | Notes |
+|---|---|
+| `fetched` | entries found in the source, including entries repeated inside one response |
+| `inserted` | entries stored as new items |
+| `duplicates` | entries rejected by the unique index `(feedId, guid)`; `inserted + duplicates = fetched` |
+
+### Item object
+
+Items have no read endpoint yet; they are stored in the `items` collection.
+
+| Field | Notes |
+|---|---|
+| `feedId` | owning feed, stored as a BSON `ObjectId` |
+| `guid` | required. The entry's `guid` (RSS) or `id` (Atom), trimmed; falls back to the link |
+| `title` | nullable |
+| `link` | nullable if a `guid` exists |
+| `publishedAt` | nullable. A missing or unparseable date becomes `null` |
+| `fetchedAt` | UTC instant from the server clock, set once per fetch |
 
 ### Error messages
 
@@ -78,6 +109,13 @@ All bodies are JSON. Errors always use the shape `{"message": "..."}`, except fo
 | `400` | `id must be a valid ObjectId: <id>` |
 | `404` | `feed not found: <id>` |
 | `409` | `url already exists` |
+| `422` | `feed source returned an invalid feed` (malformed XML, or an entry with neither `guid` nor link) |
+| `422` | `feed source did not return an RSS or Atom feed` (`Content-Type: text/html`) |
+| `502` | `feed source returned HTTP <status>` (any non-2xx, redirects included) |
+| `502` | `feed source body exceeds 1 MiB` |
+| `502` | `feed source request failed` (connection error or connection closed mid-body) |
+| `504` | `feed source timed out` |
+| `500` | `item persistence failed` |
 
 When several fields are invalid at once, only one message is returned: the first field in alphabetical order (`title` before `url`). The result is deterministic.
 
@@ -87,6 +125,11 @@ When several fields are invalid at once, only one message is returned: the first
 - **No pagination.** `GET /feeds` returns every feed. Pagination is deferred until the collection can realistically grow large.
 - **Uniqueness is enforced by the database.** A unique index `url_unique` on `url` is created at application startup, before the web server accepts traffic. `POST /feeds` does not check for an existing feed first, so two concurrent requests with the same `url` cannot both succeed (covered by a 10-request concurrency test: exactly one `201`, nine `409`).
 - **Deletion is atomic.** `DELETE` issues a single remove and checks the deleted count, so two concurrent deletes of the same id yield one `204` and one `404`.
+- **Fetch is all-or-nothing before the first write.** The whole response is downloaded, parsed and validated first, so a timeout, HTTP error, HTML page, invalid XML, oversized body or an entry without identity never leaves partial items behind.
+- **Duplicates are decided by the database.** The compound unique index `feed_id_guid_unique` on `(feedId, guid)` is created at startup. Fetching the same feed twice inserts nothing the second time. The same `guid` in two different feeds is stored twice.
+- **Parsing does not run on the event loop.** Rome is blocking, so parsing runs on `Schedulers.boundedElastic()`. A test asserts the thread name.
+- **Writes run with concurrency 4** (`flatMap`). A duplicate is counted, not treated as an error.
+- **Time limit.** One overall 3 second limit covers connecting, waiting and reading the whole body. Source bodies are capped at 1 MiB.
 
 ## Known limitations
 
@@ -95,19 +138,33 @@ When several fields are invalid at once, only one message is returned: the first
 - **Framework-level errors use Spring's default shape.** Malformed JSON and an empty request body on `POST /feeds` return `400` with `{"timestamp", "path", "status", "error", "requestId"}` instead of `{"message"}`.
 - **No upper bound on `url` and `title` length.**
 - **The replica set member is registered as `localhost:27017`.** This works for an application running on the host, but it will not resolve from another container (needed from M6, when the application runs in Docker).
+- **The feed URL is not restricted (SSRF).** `POST /feeds/{id}/fetch` makes the server request any stored `http` or `https` URL, including loopback and private addresses. There is no allow list and no authentication. Do not expose the service beyond localhost before this is closed.
+- **Redirects are not followed.** A source that answers `301` or `302` produces `502 feed source returned HTTP 301`.
+- **One bad entry rejects the whole feed.** An entry with neither `guid` nor link makes every fetch of that feed return `422`.
+- **Unexpected database errors can leave partial writes.** There is no transaction; a failure in the middle of the batch returns `500` and items written before it stay.
+- **Same `guid` twice in one response:** concurrent writes mean it is not defined which version is stored. Only one is.
+- **No normalization of `guid` or link.** Values are only trimmed.
+- **Deleting a feed does not delete its items.** Orphaned items stay in the `items` collection.
+- **The 3 second overall limit is tight for large feeds on slow servers**, which return `504`.
+- **Warning in the logs for oversized bodies.** When a source exceeds 1 MiB, Reactor Netty logs a post-termination `IllegalReferenceCountException`. The API still returns the correct `502` and nothing is stored, but the cause is not resolved. To investigate: run that test with `-Dio.netty.leakDetection.level=paranoid` and check the Reactor Netty version against upstream reports.
+- **Source errors are mapped by type.** Connection and premature-close errors become `502`. Other exception types raised while reading a body would currently surface as Spring's default `500` shape.
 - **Startup fails if the collection already contains duplicate `url` values**, because the unique index cannot be built. This is intended fail-fast behavior; clean the collection or remove the duplicates.
 
 ## Project layout
 
 ```text
 src/main/java/com/nantonijevic/feeds
-  config/        FeedIndexConfig (unique index), TimeConfig (Clock bean)
+  client/        FeedSourceClient (WebClient call, error mapping, timeout)
+  config/        FeedIndexConfig (unique indexes), FeedClientConfig (WebClient), TimeConfig (Clock bean)
   controller/    FeedController, ApiExceptionHandler
-  domain/        Feed (MongoDB document)
-  dto/           CreateFeedRequest, FeedResponse, ApiError
-  exception/     FeedNotFoundException, InvalidFeedIdException, DuplicateFeedUrlException
-  repository/    FeedRepository
-  service/       FeedService
+  domain/        Feed, Item (MongoDB documents)
+  dto/           CreateFeedRequest, FeedResponse, FetchFeedResponse, ApiError
+  exception/     FeedNotFoundException, InvalidFeedIdException, DuplicateFeedUrlException,
+                 FeedSourceRequestException, FeedSourceTimeoutException,
+                 InvalidFeedSourceException, ItemPersistenceException
+  parser/        FeedParser (Rome), ParsedFeedItem
+  repository/    FeedRepository, ItemRepository
+  service/       FeedService, FetchFeedService
   validation/    @AbsoluteHttpUrl and its validator
 ```
 
@@ -116,7 +173,7 @@ src/main/java/com/nantonijevic/feeds
 | M | Scope | Status |
 |---|---|---|
 | M1 | Skeleton, reactive MongoDB, feed CRUD (create, list, get, delete), unique `url` | done |
-| M2 | Fetch and parse a single feed, store items, reject duplicates by unique index | planned |
+| M2 | Fetch and parse a single feed, store items, reject duplicates by unique index | done |
 | M3 | Periodic fetching of N feeds: bounded parallelism, timeout, retry with backoff, isolated failures | planned |
 | M4 | Variable-shaped items, aggregations, `explain()` | planned |
 | M5 | Live item stream over SSE backed by change streams | planned |

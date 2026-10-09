@@ -162,6 +162,90 @@ Content-Type: application/json
 {"message":"id must be a valid ObjectId: abc"}
 ```
 
+## Fetch a feed
+
+Downloads the feed URL, parses RSS or Atom, and stores the entries as items. The request is synchronous; the response says what happened:
+
+```shell
+curl -i -X POST "$BASE/feeds/6ac78097a074eb4e5b03e88b/fetch"
+```
+
+```text
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{"fetched":2,"inserted":2,"duplicates":0}
+```
+
+Fetching the same feed again inserts nothing, because `(feedId, guid)` is unique:
+
+```text
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{"fetched":2,"inserted":0,"duplicates":2}
+```
+
+An Atom feed works the same way:
+
+```text
+{"fetched":1,"inserted":1,"duplicates":0}
+```
+
+## Fetch errors
+
+The source answered with an HTTP error (any non-2xx status, including 404 and 500):
+
+```text
+HTTP/1.1 502 Bad Gateway
+Content-Type: application/json
+
+{"message":"feed source returned HTTP 404"}
+```
+
+The source did not answer within 3 seconds in total:
+
+```text
+HTTP/1.1 504 Gateway Timeout
+Content-Type: application/json
+
+{"message":"feed source timed out"}
+```
+
+The source returned malformed XML:
+
+```text
+HTTP/1.1 422 Unprocessable Entity
+Content-Type: application/json
+
+{"message":"feed source returned an invalid feed"}
+```
+
+The source returned an HTML page (`Content-Type: text/html`):
+
+```text
+HTTP/1.1 422 Unprocessable Entity
+Content-Type: application/json
+
+{"message":"feed source did not return an RSS or Atom feed"}
+```
+
+Unknown or malformed local feed id:
+
+```text
+HTTP/1.1 404 Not Found
+
+{"message":"feed not found: 6ac78097a074eb4e5b03e88b"}
+```
+
+```text
+HTTP/1.1 400 Bad Request
+
+{"message":"id must be a valid ObjectId: xyz"}
+```
+
+Not captured from a real run, but covered by integration tests: a body over 1 MiB and a connection closed mid-body return `502` with `feed source body exceeds 1 MiB` and `feed source request failed`.
+
 ## Known framework-level error shape
 
 Malformed JSON and an empty body do not use `{"message"}`; they return Spring's default error body:
