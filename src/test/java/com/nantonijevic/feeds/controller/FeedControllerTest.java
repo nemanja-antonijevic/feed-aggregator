@@ -5,12 +5,15 @@ import java.time.Instant;
 import com.nantonijevic.feeds.domain.Feed;
 import com.nantonijevic.feeds.exception.FeedNotFoundException;
 import com.nantonijevic.feeds.exception.InvalidFeedIdException;
+import com.nantonijevic.feeds.exception.ItemPersistenceException;
 import com.nantonijevic.feeds.service.FeedService;
+import com.nantonijevic.feeds.service.FetchFeedService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webflux.test.autoconfigure.WebFluxTest;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.reactive.server.WebTestClient;
@@ -32,6 +35,9 @@ class FeedControllerTest {
 
     @MockitoBean
     private FeedService feedService;
+
+    @MockitoBean
+    private FetchFeedService fetchFeedService;
 
     @Test
     void createsFeed() {
@@ -191,6 +197,29 @@ class FeedControllerTest {
                 .expectBody()
                 .jsonPath("$.message")
                 .isEqualTo("id must be a valid ObjectId: abc");
+    }
+
+    @Test
+    void itemPersistenceFailureReturnsApiError() {
+        when(fetchFeedService.fetch(ID))
+                .thenReturn(
+                        Mono.error(
+                                new ItemPersistenceException(
+                                        new IllegalStateException(
+                                                "database failed"
+                                        )
+                                )
+                        )
+                );
+
+        webTestClient.post()
+                .uri("/feeds/{id}/fetch", ID)
+                .exchange()
+                .expectStatus()
+                .isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR)
+                .expectBody()
+                .jsonPath("$.message")
+                .isEqualTo("item persistence failed");
     }
 
     private void assertBadRequest(

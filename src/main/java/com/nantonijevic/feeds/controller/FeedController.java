@@ -4,7 +4,9 @@ import java.net.URI;
 
 import com.nantonijevic.feeds.dto.CreateFeedRequest;
 import com.nantonijevic.feeds.dto.FeedResponse;
+import com.nantonijevic.feeds.dto.FetchFeedResponse;
 import com.nantonijevic.feeds.service.FeedService;
+import com.nantonijevic.feeds.service.FetchFeedService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -25,8 +27,14 @@ public class FeedController {
 
     private final FeedService feedService;
 
-    public FeedController(FeedService feedService) {
+    private final FetchFeedService fetchFeedService;
+
+    public FeedController(
+            FeedService feedService,
+            FetchFeedService fetchFeedService
+    ) {
         this.feedService = feedService;
+        this.fetchFeedService = fetchFeedService;
     }
 
     @PostMapping
@@ -60,5 +68,10 @@ public class FeedController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public Mono<Void> deleteById(@PathVariable String id) {
         return feedService.deleteById(id);
+    }
+
+    @PostMapping("/{id}/fetch")
+    public Mono<FetchFeedResponse> fetch(@PathVariable String id) {
+        return fetchFeedService.fetch(id);
     }
 }
