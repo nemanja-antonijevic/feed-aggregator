@@ -11,6 +11,8 @@ public class FeedPollingCoordinator {
 
     private static final int FEED_CONCURRENCY = 4;
 
+    private static final Duration CATALOG_TIMEOUT = Duration.ofSeconds(10);
+
     private final FeedRepository feedRepository;
     private final FeedPollOperation pollOperation;
     private final Duration interval;
@@ -32,13 +34,18 @@ public class FeedPollingCoordinator {
         return Flux.interval(Duration.ZERO, interval, scheduler)
                 .onBackpressureDrop()
                 .concatMap(
-                        tick -> runCycle().thenReturn(tick),
+                        tick -> runCycle()
+                                .thenReturn(tick)
+                                .onErrorResume(error -> Mono.empty()),
                         0
                 );
     }
 
     private Mono<Void> runCycle() {
         return feedRepository.findAll()
+                .collectList()
+                .timeout(CATALOG_TIMEOUT, scheduler)
+                .flatMapMany(Flux::fromIterable)
                 .flatMap(pollOperation::poll, FEED_CONCURRENCY)
                 .then();
     }
