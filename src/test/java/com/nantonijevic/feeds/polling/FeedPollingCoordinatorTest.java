@@ -110,4 +110,130 @@ class FeedPollingCoordinatorTest {
                 .thenCancel()
                 .verify(Duration.ofSeconds(1));
     }
+
+    @Test
+    void feedFailureDoesNotPreventOtherFeedsFromBeingPolled() {
+        VirtualTimeScheduler scheduler = VirtualTimeScheduler.create();
+        FeedRepository feedRepository = mock(FeedRepository.class);
+
+        Feed failingFeed = new Feed(
+                "507f1f77bcf86cd799439011",
+                "https://example.com/failing.xml",
+                "Failing",
+                Instant.parse("2026-10-22T08:00:00Z")
+        );
+
+        Feed successfulFeed = new Feed(
+                "507f1f77bcf86cd799439012",
+                "https://example.com/successful.xml",
+                "Successful",
+                Instant.parse("2026-10-22T08:00:00Z")
+        );
+
+        when(feedRepository.findAll()).thenReturn(
+                Flux.just(failingFeed, successfulFeed)
+        );
+
+        List<String> attemptedFeedIds = new CopyOnWriteArrayList<>();
+
+        FeedPollOperation pollOperation = feed -> Mono.defer(() -> {
+            attemptedFeedIds.add(feed.getId());
+
+            if (feed.getId().equals(failingFeed.getId())) {
+                return Mono.error(new IllegalStateException("poll failed"));
+            }
+
+            return Mono.empty();
+        });
+
+        FeedPollingCoordinator coordinator = new FeedPollingCoordinator(
+                feedRepository,
+                pollOperation,
+                Duration.ofHours(1),
+                scheduler
+        );
+
+        StepVerifier.withVirtualTime(
+                        coordinator::cycles,
+                        () -> scheduler,
+                        Long.MAX_VALUE
+                )
+                .thenAwait(Duration.ofSeconds(1))
+                .expectNext(0L)
+                .thenCancel()
+                .verify(Duration.ofSeconds(1));
+
+        assertThat(attemptedFeedIds)
+                .containsExactlyInAnyOrder(
+                        failingFeed.getId(),
+                        successfulFeed.getId()
+                );
+    }
+
+    @Test
+    void synchronousFeedFailureDoesNotPreventLaterFeedsFromBeingPolled() {
+        VirtualTimeScheduler scheduler = VirtualTimeScheduler.create();
+        FeedRepository feedRepository = mock(FeedRepository.class);
+
+        Feed firstFeed = new Feed(
+                "507f1f77bcf86cd799439011",
+                "https://example.com/first.xml",
+                "First",
+                Instant.parse("2026-10-22T08:00:00Z")
+        );
+
+        Feed failingFeed = new Feed(
+                "507f1f77bcf86cd799439012",
+                "https://example.com/failing.xml",
+                "Failing",
+                Instant.parse("2026-10-22T08:00:00Z")
+        );
+
+        Feed lastFeed = new Feed(
+                "507f1f77bcf86cd799439013",
+                "https://example.com/last.xml",
+                "Last",
+                Instant.parse("2026-10-22T08:00:00Z")
+        );
+
+        when(feedRepository.findAll()).thenReturn(
+                Flux.just(firstFeed, failingFeed, lastFeed)
+        );
+
+        List<String> attemptedFeedIds = new CopyOnWriteArrayList<>();
+
+        FeedPollOperation pollOperation = feed -> {
+            attemptedFeedIds.add(feed.getId());
+
+            if (feed.getId().equals(failingFeed.getId())) {
+                throw new IllegalStateException("synchronous poll failure");
+            }
+
+            return Mono.empty();
+        };
+
+        FeedPollingCoordinator coordinator = new FeedPollingCoordinator(
+                feedRepository,
+                pollOperation,
+                Duration.ofHours(1),
+                scheduler
+        );
+
+        StepVerifier.withVirtualTime(
+                        coordinator::cycles,
+                        () -> scheduler,
+                        Long.MAX_VALUE
+                )
+                .thenAwait(Duration.ofSeconds(1))
+                .expectNext(0L)
+                .thenCancel()
+                .verify(Duration.ofSeconds(1));
+
+        assertThat(attemptedFeedIds)
+                .containsExactlyInAnyOrder(
+                        firstFeed.getId(),
+                        failingFeed.getId(),
+                        lastFeed.getId()
+                );
+    }
 }

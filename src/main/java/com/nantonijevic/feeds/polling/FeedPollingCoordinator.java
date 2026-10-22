@@ -46,7 +46,11 @@ public class FeedPollingCoordinator {
                 .collectList()
                 .timeout(CATALOG_TIMEOUT, scheduler)
                 .flatMapMany(Flux::fromIterable)
-                .flatMap(pollOperation::poll, FEED_CONCURRENCY)
+                .flatMap(
+                        feed -> Mono.defer(() -> pollOperation.poll(feed))
+                                .onErrorResume(error -> Mono.empty()),
+                        FEED_CONCURRENCY
+                )
                 .then();
     }
 }
