@@ -1,6 +1,8 @@
 package com.nantonijevic.feeds.polling;
 
 import com.nantonijevic.feeds.repository.FeedRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
@@ -8,6 +10,9 @@ import reactor.core.scheduler.Scheduler;
 import java.time.Duration;
 
 public class FeedPollingCoordinator {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(FeedPollingCoordinator.class);
 
     private static final int FEED_CONCURRENCY = 4;
 
@@ -48,6 +53,12 @@ public class FeedPollingCoordinator {
                 .flatMapMany(Flux::fromIterable)
                 .flatMap(
                         feed -> Mono.defer(() -> pollOperation.poll(feed))
+                                .doOnError(error -> log.warn(
+                                        "event=poll_feed_failed feedId={} "
+                                                + "errorType={}",
+                                        feed.getId(),
+                                        error.getClass().getSimpleName()
+                                ))
                                 .onErrorResume(error -> Mono.empty()),
                         FEED_CONCURRENCY
                 )

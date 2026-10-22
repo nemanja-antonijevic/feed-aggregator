@@ -1,8 +1,13 @@
 package com.nantonijevic.feeds.polling;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.nantonijevic.feeds.domain.Feed;
 import com.nantonijevic.feeds.repository.FeedRepository;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
@@ -235,5 +240,90 @@ class FeedPollingCoordinatorTest {
                         failingFeed.getId(),
                         lastFeed.getId()
                 );
+    }
+
+    @Test
+    void feedFailureLogsSanitizedWarningAndCycleContinues() {
+        VirtualTimeScheduler scheduler = VirtualTimeScheduler.create();
+        FeedRepository feedRepository = mock(FeedRepository.class);
+
+        Feed failingFeed = new Feed(
+                "507f1f77bcf86cd799439011",
+                "https://user:secret@example.com/feed.xml?token=private",
+                "Failing",
+                Instant.parse("2026-10-22T08:00:00Z")
+        );
+
+        Feed successfulFeed = new Feed(
+                "507f1f77bcf86cd799439012",
+                "https://example.com/successful.xml",
+                "Successful",
+                Instant.parse("2026-10-22T08:00:00Z")
+        );
+
+        when(feedRepository.findAll()).thenReturn(
+                Flux.just(failingFeed, successfulFeed)
+        );
+
+        FeedPollOperation pollOperation = feed -> {
+            if (feed.getId().equals(failingFeed.getId())) {
+                return Mono.error(new IllegalStateException(
+                        "poll failed for " + failingFeed.getUrl()
+                ));
+            }
+
+            return Mono.empty();
+        };
+
+        FeedPollingCoordinator coordinator = new FeedPollingCoordinator(
+                feedRepository,
+                pollOperation,
+                Duration.ofHours(1),
+                scheduler
+        );
+
+        Logger logger = (Logger) LoggerFactory.getLogger(
+                FeedPollingCoordinator.class
+        );
+
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try {
+            StepVerifier.withVirtualTime(
+                            coordinator::cycles,
+                            () -> scheduler,
+                            Long.MAX_VALUE
+                    )
+                    .thenAwait(Duration.ofSeconds(1))
+                    .expectNext(0L)
+                    .thenCancel()
+                    .verify(Duration.ofSeconds(1));
+
+            assertThat(appender.list)
+                    .filteredOn(event -> event.getFormattedMessage()
+                            .contains("event=poll_feed_failed"))
+                    .singleElement()
+                    .satisfies(event -> {
+                        assertThat(event.getLevel()).isEqualTo(Level.WARN);
+                        assertThat(event.getFormattedMessage()).isEqualTo(
+                                "event=poll_feed_failed feedId="
+                                        + failingFeed.getId()
+                                        + " errorType=IllegalStateException"
+                        );
+                        assertThat(event.getFormattedMessage())
+                                .doesNotContain(
+                                        failingFeed.getUrl(),
+                                        "user:secret",
+                                        "secret",
+                                        "token="
+                                );
+                        assertThat(event.getThrowableProxy()).isNull();
+                    });
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
     }
 }
