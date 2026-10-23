@@ -326,4 +326,161 @@ class FeedPollingCoordinatorTest {
             appender.stop();
         }
     }
+
+    @Test
+    void catalogFailureLogsSanitizedErrorAndPollingContinues() {
+        VirtualTimeScheduler scheduler = VirtualTimeScheduler.create();
+        FeedRepository feedRepository = mock(FeedRepository.class);
+
+        Feed feed = new Feed(
+                "507f1f77bcf86cd799439011",
+                "https://example.com/feed.xml",
+                "Example",
+                Instant.parse("2026-10-23T08:00:00Z")
+        );
+
+        when(feedRepository.findAll()).thenReturn(
+                Flux.error(new IllegalStateException(
+                        "catalog failed with secret data"
+                )),
+                Flux.just(feed)
+        );
+
+        FeedPollOperation pollOperation = ignored -> Mono.empty();
+
+        FeedPollingCoordinator coordinator = new FeedPollingCoordinator(
+                feedRepository,
+                pollOperation,
+                Duration.ofSeconds(20),
+                scheduler
+        );
+
+        Logger logger = (Logger) LoggerFactory.getLogger(
+                FeedPollingCoordinator.class
+        );
+
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try {
+            StepVerifier.withVirtualTime(
+                            coordinator::cycles,
+                            () -> scheduler,
+                            Long.MAX_VALUE
+                    )
+                    .thenAwait(Duration.ofSeconds(20))
+                    .expectNext(1L)
+                    .thenCancel()
+                    .verify(Duration.ofSeconds(1));
+
+            assertThat(appender.list)
+                    .filteredOn(event -> event.getFormattedMessage()
+                            .contains("event=poll_cycle_failed"))
+                    .singleElement()
+                    .satisfies(event -> {
+                        assertThat(event.getLevel()).isEqualTo(Level.ERROR);
+                        assertThat(event.getFormattedMessage()).isEqualTo(
+                                "event=poll_cycle_failed "
+                                        + "errorType=IllegalStateException"
+                        );
+                        assertThat(event.getFormattedMessage())
+                                .doesNotContain("secret data");
+                        assertThat(event.getThrowableProxy()).isNull();
+                    });
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+    }
+
+    @Test
+    void nullPollResultDoesNotPreventOtherFeedsFromBeingPolled() {
+        VirtualTimeScheduler scheduler = VirtualTimeScheduler.create();
+        FeedRepository feedRepository = mock(FeedRepository.class);
+
+        Feed nullFeed = new Feed(
+                "507f1f77bcf86cd799439011",
+                "https://example.com/null.xml",
+                "Null",
+                Instant.parse("2026-10-23T08:00:00Z")
+        );
+
+        Feed successfulFeed = new Feed(
+                "507f1f77bcf86cd799439012",
+                "https://example.com/successful.xml",
+                "Successful",
+                Instant.parse("2026-10-23T08:00:00Z")
+        );
+
+        when(feedRepository.findAll()).thenReturn(
+                Flux.just(nullFeed, successfulFeed)
+        );
+
+        List<String> attemptedFeedIds = new CopyOnWriteArrayList<>();
+
+        FeedPollOperation pollOperation = feed -> {
+            attemptedFeedIds.add(feed.getId());
+
+            if (feed.getId().equals(nullFeed.getId())) {
+                return null;
+            }
+
+            return Mono.empty();
+        };
+
+        FeedPollingCoordinator coordinator = new FeedPollingCoordinator(
+                feedRepository,
+                pollOperation,
+                Duration.ofHours(1),
+                scheduler
+        );
+
+        Logger logger = (Logger) LoggerFactory.getLogger(
+                FeedPollingCoordinator.class
+        );
+
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try {
+            StepVerifier.withVirtualTime(
+                            coordinator::cycles,
+                            () -> scheduler,
+                            Long.MAX_VALUE
+                    )
+                    .thenAwait(Duration.ofSeconds(1))
+                    .expectNext(0L)
+                    .thenCancel()
+                    .verify(Duration.ofSeconds(1));
+
+            assertThat(attemptedFeedIds)
+                    .containsExactlyInAnyOrder(
+                            nullFeed.getId(),
+                            successfulFeed.getId()
+                    );
+
+            assertThat(appender.list)
+                    .filteredOn(event -> event.getFormattedMessage()
+                            .contains("event=poll_feed_failed"))
+                    .singleElement()
+                    .satisfies(event -> {
+                        assertThat(event.getLevel()).isEqualTo(Level.WARN);
+                        assertThat(event.getFormattedMessage()).isEqualTo(
+                                "event=poll_feed_failed feedId="
+                                        + nullFeed.getId()
+                                        + " errorType=NullPointerException"
+                        );
+                        assertThat(event.getThrowableProxy()).isNull();
+                    });
+
+            assertThat(appender.list)
+                    .noneMatch(event -> event.getFormattedMessage()
+                            .contains("event=poll_cycle_failed"));
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+    }
 }

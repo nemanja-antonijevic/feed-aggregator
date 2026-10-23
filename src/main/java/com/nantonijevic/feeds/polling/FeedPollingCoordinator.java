@@ -41,6 +41,10 @@ public class FeedPollingCoordinator {
                 .concatMap(
                         tick -> runCycle()
                                 .thenReturn(tick)
+                                .doOnError(error -> log.error(
+                                        "event=poll_cycle_failed errorType={}",
+                                        error.getClass().getSimpleName()
+                                ))
                                 .onErrorResume(error -> Mono.empty()),
                         0
                 );
