@@ -48,10 +48,10 @@ The two earlier tests (skipped ticks, catalog timeout) are unchanged. Full suite
 
 ## Known limitations
 
-- `errorType` does not say why a feed failed: `FeedSourceRequestException` covers an HTTP error status,
-  a connection failure and a body over 1 MiB alike. `getSimpleName()` is empty for an anonymous class.
-- There is no per-feed timeout in the coordinator. A hanging poll holds one of the 4 concurrency slots
-  until the cycle ends.
+- The original unstructured source error and missing per-feed timeout were resolved by the follow-up
+  [retry task](m3-retry-with-backoff.md), which adds structured source errors, transient retries and
+  a 12 second per-feed budget.
+- `getSimpleName()` remains empty for an anonymous exception class.
 - A permanently dead feed logs one WARN per cycle.
 - `FeedPollOperation` has no production implementation yet and the coordinator is not wired into the
   application lifecycle, so none of this runs in the application yet.

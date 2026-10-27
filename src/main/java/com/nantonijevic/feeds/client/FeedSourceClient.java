@@ -3,7 +3,9 @@ package com.nantonijevic.feeds.client;
 import java.time.Duration;
 import java.util.concurrent.TimeoutException;
 
-import com.nantonijevic.feeds.exception.FeedSourceRequestException;
+import com.nantonijevic.feeds.exception.FeedSourceBodyTooLargeException;
+import com.nantonijevic.feeds.exception.FeedSourceConnectionException;
+import com.nantonijevic.feeds.exception.FeedSourceHttpException;
 import com.nantonijevic.feeds.exception.FeedSourceTimeoutException;
 import com.nantonijevic.feeds.exception.InvalidFeedSourceException;
 import io.netty.handler.timeout.ReadTimeoutException;
@@ -36,10 +38,7 @@ public class FeedSourceClient {
                     if (!response.statusCode().is2xxSuccessful()) {
                         return response.releaseBody()
                                 .then(Mono.error(
-                                        new FeedSourceRequestException(
-                                                "feed source returned HTTP "
-                                                        + status
-                                        )
+                                        new FeedSourceHttpException(status)
                                 ));
                     }
 
@@ -67,8 +66,7 @@ public class FeedSourceClient {
                 .onErrorMap(
                         DataBufferLimitException.class,
                         exception ->
-                                new FeedSourceRequestException(
-                                        "feed source body exceeds 1 MiB",
+                                new FeedSourceBodyTooLargeException(
                                         exception
                                 )
                 )
@@ -87,8 +85,7 @@ public class FeedSourceClient {
                                         || exception
                                         instanceof PrematureCloseException,
                         exception ->
-                                new FeedSourceRequestException(
-                                        "feed source request failed",
+                                new FeedSourceConnectionException(
                                         exception
                                 )
                 );
