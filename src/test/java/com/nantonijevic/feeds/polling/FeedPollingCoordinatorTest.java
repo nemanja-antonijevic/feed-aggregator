@@ -23,7 +23,9 @@ import reactor.test.StepVerifier;
 import reactor.test.scheduler.VirtualTimeScheduler;
 
 import java.time.Duration;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeoutException;
@@ -61,7 +63,7 @@ class FeedPollingCoordinatorTest {
                     .then();
         });
 
-        FeedPollingCoordinator coordinator = new FeedPollingCoordinator(
+        FeedPollingCoordinator coordinator = coordinator(
                 feedRepository,
                 pollOperation,
                 Duration.ofSeconds(10),
@@ -109,7 +111,7 @@ class FeedPollingCoordinatorTest {
                 )
         );
 
-        FeedPollingCoordinator coordinator = new FeedPollingCoordinator(
+        FeedPollingCoordinator coordinator = coordinator(
                 feedRepository,
                 pollOperation,
                 Duration.ofSeconds(20),
@@ -418,7 +420,7 @@ class FeedPollingCoordinatorTest {
             return Mono.empty();
         });
 
-        FeedPollingCoordinator coordinator = new FeedPollingCoordinator(
+        FeedPollingCoordinator coordinator = coordinator(
                 feedRepository,
                 pollOperation,
                 Duration.ofHours(1),
@@ -484,7 +486,7 @@ class FeedPollingCoordinatorTest {
             return Mono.empty();
         };
 
-        FeedPollingCoordinator coordinator = new FeedPollingCoordinator(
+        FeedPollingCoordinator coordinator = coordinator(
                 feedRepository,
                 pollOperation,
                 Duration.ofHours(1),
@@ -542,7 +544,7 @@ class FeedPollingCoordinatorTest {
             return Mono.empty();
         };
 
-        FeedPollingCoordinator coordinator = new FeedPollingCoordinator(
+        FeedPollingCoordinator coordinator = coordinator(
                 feedRepository,
                 pollOperation,
                 Duration.ofHours(1),
@@ -615,7 +617,7 @@ class FeedPollingCoordinatorTest {
 
         FeedPollOperation pollOperation = ignored -> Mono.empty();
 
-        FeedPollingCoordinator coordinator = new FeedPollingCoordinator(
+        FeedPollingCoordinator coordinator = coordinator(
                 feedRepository,
                 pollOperation,
                 Duration.ofSeconds(20),
@@ -696,7 +698,7 @@ class FeedPollingCoordinatorTest {
             return Mono.empty();
         };
 
-        FeedPollingCoordinator coordinator = new FeedPollingCoordinator(
+        FeedPollingCoordinator coordinator = coordinator(
                 feedRepository,
                 pollOperation,
                 Duration.ofHours(1),
@@ -833,12 +835,53 @@ class FeedPollingCoordinatorTest {
             FeedPollOperation pollOperation,
             VirtualTimeScheduler scheduler
     ) {
-        return new FeedPollingCoordinator(
+        return coordinator(
                 feedRepository,
                 pollOperation,
                 Duration.ofHours(1),
                 scheduler
         );
+    }
+
+    private FeedPollingCoordinator coordinator(
+            FeedRepository feedRepository,
+            FeedPollOperation pollOperation,
+            Duration interval,
+            VirtualTimeScheduler scheduler
+    ) {
+        return new FeedPollingCoordinator(
+                feedRepository,
+                pollOperation,
+                noOpStatusStore(),
+                interval,
+                scheduler,
+                Clock.fixed(
+                        Instant.parse("2026-10-28T08:00:00Z"),
+                        ZoneOffset.UTC
+                )
+        );
+    }
+
+    private FeedPollStatusStore noOpStatusStore() {
+        return new FeedPollStatusStore() {
+            @Override
+            public Mono<Void> recordSuccess(
+                    String feedId,
+                    Instant lastAttemptAt,
+                    Instant lastSuccessAt
+            ) {
+                return Mono.empty();
+            }
+
+            @Override
+            public Mono<Void> recordFailure(
+                    String feedId,
+                    Instant lastAttemptAt,
+                    String errorType
+            ) {
+                return Mono.empty();
+            }
+        };
     }
 
     private Logger pollingLogger() {

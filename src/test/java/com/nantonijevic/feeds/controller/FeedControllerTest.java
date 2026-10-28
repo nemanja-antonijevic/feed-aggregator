@@ -1,8 +1,11 @@
 package com.nantonijevic.feeds.controller;
 
 import java.time.Instant;
+import java.util.Map;
 
 import com.nantonijevic.feeds.domain.Feed;
+import com.nantonijevic.feeds.domain.PollOutcome;
+import com.nantonijevic.feeds.domain.PollStatus;
 import com.nantonijevic.feeds.exception.FeedNotFoundException;
 import com.nantonijevic.feeds.exception.InvalidFeedIdException;
 import com.nantonijevic.feeds.exception.ItemPersistenceException;
@@ -19,6 +22,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import reactor.core.publisher.Mono;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 
 @WebFluxTest(FeedController.class)
@@ -74,7 +78,12 @@ class FeedControllerTest {
                 .isEqualTo("https://example.com/rss.xml")
                 .jsonPath("$.title").isEqualTo("Example")
                 .jsonPath("$.createdAt")
-                .isEqualTo("2026-10-07T07:00:00Z");
+                .isEqualTo("2026-10-07T07:00:00Z")
+                .jsonPath("$").value(document -> {
+                    Map<?, ?> response = (Map<?, ?>) document;
+                    assertThat(response.containsKey("pollStatus")).isTrue();
+                    assertThat(response.get("pollStatus")).isNull();
+                });
     }
 
     @Test
@@ -164,7 +173,50 @@ class FeedControllerTest {
                 .isEqualTo("https://example.com/rss.xml")
                 .jsonPath("$.title").isEqualTo("Example")
                 .jsonPath("$.createdAt")
-                .isEqualTo("2026-10-07T07:00:00Z");
+                .isEqualTo("2026-10-07T07:00:00Z")
+                .jsonPath("$").value(document -> {
+                    Map<?, ?> response = (Map<?, ?>) document;
+                    assertThat(response.containsKey("pollStatus")).isTrue();
+                    assertThat(response.get("pollStatus")).isNull();
+                });
+    }
+
+    @Test
+    void returnsSanitizedPollStatusWithExplicitNullLastSuccess() {
+        Feed feed = new Feed(
+                ID,
+                "https://example.com/rss.xml",
+                "Example",
+                CREATED_AT,
+                new PollStatus(
+                        Instant.parse("2026-10-28T08:00:00Z"),
+                        null,
+                        PollOutcome.FAILURE,
+                        "TimeoutException",
+                        2
+                )
+        );
+
+        when(feedService.findById(ID)).thenReturn(Mono.just(feed));
+
+        webTestClient.get()
+                .uri("/feeds/{id}", ID)
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.pollStatus.lastAttemptAt")
+                .isEqualTo("2026-10-28T08:00:00Z")
+                .jsonPath("$.pollStatus").value(value -> {
+                    Map<?, ?> status = (Map<?, ?>) value;
+                    assertThat(status.containsKey("lastSuccessAt")).isTrue();
+                    assertThat(status.get("lastSuccessAt")).isNull();
+                })
+                .jsonPath("$.pollStatus.outcome").isEqualTo("FAILURE")
+                .jsonPath("$.pollStatus.errorType")
+                .isEqualTo("TimeoutException")
+                .jsonPath("$.pollStatus.consecutiveFailures").isEqualTo(2)
+                .jsonPath("$.pollStatus.message").doesNotExist()
+                .jsonPath("$.pollStatus.url").doesNotExist();
     }
 
     @Test

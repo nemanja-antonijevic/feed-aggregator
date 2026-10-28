@@ -8,7 +8,8 @@ public record FeedResponse(
         String id,
         String url,
         String title,
-        Instant createdAt
+        Instant createdAt,
+        PollStatusResponse pollStatus
 ) {
 
     public static FeedResponse from(Feed feed) {
@@ -16,7 +17,8 @@ public record FeedResponse(
                 feed.getId(),
                 feed.getUrl(),
                 feed.getTitle(),
-                feed.getCreatedAt()
+                feed.getCreatedAt(),
+                PollStatusResponse.from(feed.getPollStatus())
         );
     }
 }

@@ -1,5 +1,6 @@
 package com.nantonijevic.feeds.polling;
 
+import com.nantonijevic.feeds.domain.Feed;
 import com.nantonijevic.feeds.exception.FeedSourceConnectionException;
 import com.nantonijevic.feeds.exception.FeedSourceHttpException;
 import com.nantonijevic.feeds.exception.FeedSourceTimeoutException;
@@ -12,7 +13,10 @@ import reactor.core.scheduler.Scheduler;
 import reactor.util.retry.Retry;
 import reactor.util.retry.RetryBackoffSpec;
 
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 
 public class FeedPollingCoordinator {
 
@@ -23,6 +27,8 @@ public class FeedPollingCoordinator {
 
     private static final Duration CATALOG_TIMEOUT = Duration.ofSeconds(10);
     private static final Duration FEED_TIMEOUT = Duration.ofSeconds(12);
+    private static final Duration STATUS_WRITE_TIMEOUT =
+            Duration.ofSeconds(2);
     private static final Duration RETRY_MIN_BACKOFF =
             Duration.ofMillis(500);
     private static final Duration RETRY_MAX_BACKOFF =
@@ -32,19 +38,25 @@ public class FeedPollingCoordinator {
 
     private final FeedRepository feedRepository;
     private final FeedPollOperation pollOperation;
+    private final FeedPollStatusStore statusStore;
     private final Duration interval;
     private final Scheduler scheduler;
+    private final Clock clock;
 
     public FeedPollingCoordinator(
             FeedRepository feedRepository,
             FeedPollOperation pollOperation,
+            FeedPollStatusStore statusStore,
             Duration interval,
-            Scheduler scheduler
+            Scheduler scheduler,
+            Clock clock
     ) {
         this.feedRepository = feedRepository;
         this.pollOperation = pollOperation;
+        this.statusStore = statusStore;
         this.interval = interval;
         this.scheduler = scheduler;
+        this.clock = clock;
     }
 
     public Flux<Long> cycles() {
@@ -68,19 +80,77 @@ public class FeedPollingCoordinator {
                 .timeout(CATALOG_TIMEOUT, scheduler)
                 .flatMapMany(Flux::fromIterable)
                 .flatMap(
-                        feed -> Mono.defer(() -> pollOperation.poll(feed))
-                                .retryWhen(retrySpec())
-                                .timeout(FEED_TIMEOUT, scheduler)
-                                .doOnError(error -> log.warn(
-                                        "event=poll_feed_failed feedId={} "
-                                                + "errorType={}",
-                                        feed.getId(),
-                                        error.getClass().getSimpleName()
-                                ))
-                                .onErrorResume(error -> Mono.empty()),
+                        this::pollFeed,
                         FEED_CONCURRENCY
                 )
                 .then();
+    }
+
+    private Mono<Void> pollFeed(Feed feed) {
+        return Mono.defer(() -> {
+            Instant lastAttemptAt = now();
+
+            return Mono.defer(() -> pollOperation.poll(feed))
+                    .retryWhen(retrySpec())
+                    .timeout(FEED_TIMEOUT, scheduler)
+                    .then(Mono.defer(() -> recordSuccess(
+                            feed.getId(),
+                            lastAttemptAt
+                    )))
+                    .doOnError(error -> log.warn(
+                            "event=poll_feed_failed feedId={} errorType={}",
+                            feed.getId(),
+                            error.getClass().getSimpleName()
+                    ))
+                    .onErrorResume(error -> recordFailure(
+                            feed.getId(),
+                            lastAttemptAt,
+                            error
+                    ));
+        });
+    }
+
+    private Mono<Void> recordSuccess(
+            String feedId,
+            Instant lastAttemptAt
+    ) {
+        return Mono.defer(() -> statusStore.recordSuccess(
+                        feedId,
+                        lastAttemptAt,
+                        now()
+                ))
+                .timeout(STATUS_WRITE_TIMEOUT, scheduler)
+                .onErrorResume(error -> statusWriteFailed(feedId, error));
+    }
+
+    private Mono<Void> recordFailure(
+            String feedId,
+            Instant lastAttemptAt,
+            Throwable pollError
+    ) {
+        return Mono.defer(() -> statusStore.recordFailure(
+                        feedId,
+                        lastAttemptAt,
+                        pollError.getClass().getSimpleName()
+                ))
+                .timeout(STATUS_WRITE_TIMEOUT, scheduler)
+                .onErrorResume(error -> statusWriteFailed(feedId, error));
+    }
+
+    private Mono<Void> statusWriteFailed(
+            String feedId,
+            Throwable error
+    ) {
+        log.warn(
+                "event=poll_status_write_failed feedId={} errorType={}",
+                feedId,
+                error.getClass().getSimpleName()
+        );
+        return Mono.empty();
+    }
+
+    private Instant now() {
+        return Instant.now(clock).truncatedTo(ChronoUnit.MILLIS);
     }
 
     private RetryBackoffSpec retrySpec() {

@@ -45,6 +45,9 @@ Manual `POST /feeds/{id}/fetch` calls do not change `pollStatus`.
    `errorType`, but does not retry the poll, fail the cycle or cancel other feeds; the previous
    status may remain stale. The status-write branch is outside the feed-poll error boundary: its
    failure never emits `poll_feed_failed` and never changes a successful poll into a feed failure.
+   Each status-store operation has a separate two-second timeout on the injected scheduler. Its
+   `TimeoutException` follows the same `poll_status_write_failed` path, releases the per-feed slot
+   and allows the cycle to complete.
 
 ## Required tests
 
@@ -70,6 +73,11 @@ Manual `POST /feeds/{id}/fetch` calls do not change `pollStatus`.
 - Response and status-write logs contain no exception message, cause, stack trace or extra URL.
 - When a successful poll's status write fails, the cycle and sibling feeds continue,
   `poll_status_write_failed` is emitted once, and no `poll_feed_failed` event is emitted.
+- When a failed poll's status write also fails, exactly one `poll_feed_failed` and exactly one
+  `poll_status_write_failed` are emitted, and the cycle still completes.
+- A status store that returns `Mono.never()` times out after two seconds, logs
+  `poll_status_write_failed` with `errorType == "TimeoutException"`, releases its concurrency slot
+  and does not stop later cycles.
 - A zero-match update does not stop the cycle or create a document.
 
 ## Known limitation
