@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import com.nantonijevic.feeds.client.FeedSourceClient;
 import com.nantonijevic.feeds.domain.Feed;
 import com.nantonijevic.feeds.domain.Item;
+import com.nantonijevic.feeds.exception.FeedNotFoundException;
 import com.nantonijevic.feeds.exception.ItemPersistenceException;
 import com.nantonijevic.feeds.parser.FeedParser;
 import com.nantonijevic.feeds.parser.ParsedFeedItem;
@@ -23,6 +24,7 @@ import reactor.test.StepVerifier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -105,6 +107,24 @@ class FetchFeedServiceTest {
                                 .hasCause(repositoryFailure)
                 )
                 .verify();
+    }
+
+    @Test
+    void deletedFeedStopsBeforeSourceRequestOrItemWrite() {
+        when(feedService.findById(FEED_ID))
+                .thenReturn(Mono.error(
+                        new FeedNotFoundException(FEED_ID)
+                ));
+
+        StepVerifier.create(fetchFeedService.fetch(FEED_ID))
+                .expectError(FeedNotFoundException.class)
+                .verify();
+
+        verifyNoInteractions(
+                feedSourceClient,
+                feedParser,
+                itemRepository
+        );
     }
 
     @Test

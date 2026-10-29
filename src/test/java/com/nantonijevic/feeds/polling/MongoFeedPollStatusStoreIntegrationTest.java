@@ -83,10 +83,12 @@ class MongoFeedPollStatusStoreIntegrationTest {
                                                 FIRST_ATTEMPT,
                                                 "FeedSourceHttpException"
                                         )
-                                        .then(feedRepository.findById(
-                                                feed.getId()
+                                        .then(Mono.zip(
+                                                feedRepository.findById(
+                                                        feed.getId()
+                                                ),
+                                                rawFeed(feed.getId())
                                         ))
-                                        .zipWith(rawFeed(feed.getId()))
                                 )
                 )
                 .assertNext(result -> {

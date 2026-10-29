@@ -7,6 +7,42 @@ Responses below were captured from a real run; ids and timestamps will differ on
 BASE=http://localhost:8080
 ```
 
+## Run with periodic polling
+
+Polling is disabled by default. This starts it with a 30-second interval; the
+first cycle runs immediately:
+
+```shell
+./mvnw spring-boot:run \
+  -Dspring-boot.run.arguments="--feeds.polling.enabled=true --feeds.polling.interval=30s"
+```
+
+No new polling endpoint is introduced. Read the latest sanitized result from
+the existing feed endpoint:
+
+```shell
+curl -i "$BASE/feeds/6ac78097a074eb4e5b03e88b"
+```
+
+Before the first scheduled attempt, `pollStatus` is explicitly `null`. After a
+success it resembles:
+
+```json
+{
+  "id": "6ac78097a074eb4e5b03e88b",
+  "url": "https://example.com/a.xml",
+  "title": "Feed A",
+  "createdAt": "2026-10-08T11:37:59.817Z",
+  "pollStatus": {
+    "lastAttemptAt": "2026-10-29T08:00:00Z",
+    "lastSuccessAt": "2026-10-29T08:00:00.240Z",
+    "outcome": "SUCCESS",
+    "errorType": null,
+    "consecutiveFailures": 0
+  }
+}
+```
+
 ## Create a feed
 
 ```shell
@@ -20,7 +56,7 @@ HTTP/1.1 201 Created
 Location: /feeds/6ac78097a074eb4e5b03e88b
 Content-Type: application/json
 
-{"id":"6ac78097a074eb4e5b03e88b","url":"https://example.com/a.xml","title":"Feed A","createdAt":"2026-10-08T11:37:59.817Z"}
+{"id":"6ac78097a074eb4e5b03e88b","url":"https://example.com/a.xml","title":"Feed A","createdAt":"2026-10-08T11:37:59.817Z","pollStatus":null}
 ```
 
 ## Duplicate url
@@ -84,7 +120,7 @@ curl -i "$BASE/feeds"
 HTTP/1.1 200 OK
 Content-Type: application/json
 
-[{"id":"6ac78097a074eb4e5b03e88c","url":"https://example.com/b.xml","title":"Feed B","createdAt":"2026-10-08T11:37:59.885Z"},{"id":"6ac78097a074eb4e5b03e88b","url":"https://example.com/a.xml","title":"Feed A","createdAt":"2026-10-08T11:37:59.817Z"}]
+[{"id":"6ac78097a074eb4e5b03e88c","url":"https://example.com/b.xml","title":"Feed B","createdAt":"2026-10-08T11:37:59.885Z","pollStatus":null},{"id":"6ac78097a074eb4e5b03e88b","url":"https://example.com/a.xml","title":"Feed A","createdAt":"2026-10-08T11:37:59.817Z","pollStatus":null}]
 ```
 
 ## Get one feed
@@ -97,7 +133,7 @@ curl -i "$BASE/feeds/6ac78097a074eb4e5b03e88b"
 HTTP/1.1 200 OK
 Content-Type: application/json
 
-{"id":"6ac78097a074eb4e5b03e88b","url":"https://example.com/a.xml","title":"Feed A","createdAt":"2026-10-08T11:37:59.817Z"}
+{"id":"6ac78097a074eb4e5b03e88b","url":"https://example.com/a.xml","title":"Feed A","createdAt":"2026-10-08T11:37:59.817Z","pollStatus":null}
 ```
 
 Valid id that does not exist:

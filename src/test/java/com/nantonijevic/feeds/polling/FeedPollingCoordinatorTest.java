@@ -10,6 +10,7 @@ import com.nantonijevic.feeds.exception.FeedSourceConnectionException;
 import com.nantonijevic.feeds.exception.FeedSourceHttpException;
 import com.nantonijevic.feeds.exception.FeedSourceTimeoutException;
 import com.nantonijevic.feeds.exception.InvalidFeedSourceException;
+import com.nantonijevic.feeds.exception.ItemPersistenceException;
 import com.nantonijevic.feeds.repository.FeedRepository;
 import org.junit.jupiter.api.Named;
 import org.junit.jupiter.api.Test;
@@ -83,7 +84,7 @@ class FeedPollingCoordinatorTest {
                 .then(() -> assertThat(cycleStartSeconds)
                         .containsExactly(0L, 20L))
                 .thenCancel()
-                .verify();
+                .verify(Duration.ofSeconds(1));
     }
 
     @Test
@@ -809,6 +810,15 @@ class FeedPollingCoordinatorTest {
                         (Supplier<RuntimeException>) () ->
                                 new IllegalArgumentException(
                                         "invalid URL"
+                                )
+                )),
+                Arguments.of(Named.of(
+                        "item persistence failure",
+                        (Supplier<RuntimeException>) () ->
+                                new ItemPersistenceException(
+                                        new IllegalStateException(
+                                                "database failed"
+                                        )
                                 )
                 )),
                 Arguments.of(Named.of(

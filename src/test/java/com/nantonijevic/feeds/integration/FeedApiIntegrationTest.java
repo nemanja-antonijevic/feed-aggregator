@@ -12,6 +12,8 @@ import com.nantonijevic.feeds.domain.Item;
 import com.nantonijevic.feeds.dto.FeedResponse;
 import com.nantonijevic.feeds.repository.FeedRepository;
 import com.nantonijevic.feeds.repository.ItemRepository;
+import com.nantonijevic.feeds.polling.FetchFeedPollOperation;
+import com.nantonijevic.feeds.service.FetchFeedService;
 import mockwebserver3.MockResponse;
 import mockwebserver3.MockWebServer;
 import mockwebserver3.SocketEffect;
@@ -52,6 +54,9 @@ class FeedApiIntegrationTest {
     @Autowired
     private ItemRepository itemRepository;
 
+    @Autowired
+    private FetchFeedService fetchFeedService;
+
     @BeforeEach
     void cleanDatabase() {
         StepVerifier.create(
@@ -60,6 +65,34 @@ class FeedApiIntegrationTest {
                         itemRepository.deleteAll()
                 )
         ).verifyComplete();
+    }
+
+    @Test
+    void deletedSnapshotIsSkippedBeforeSourceRequestOrItemWrite()
+            throws IOException {
+        try (MockWebServer source = new MockWebServer()) {
+            source.start();
+            Feed snapshot = feedRepository.save(new Feed(
+                    null,
+                    source.url("/deleted.xml").toString(),
+                    "Deleted",
+                    Instant.parse("2026-10-29T08:00:00Z")
+            )).block();
+
+            assertThat(snapshot).isNotNull();
+            FetchFeedPollOperation operation =
+                    new FetchFeedPollOperation(fetchFeedService);
+
+            StepVerifier.create(
+                            feedRepository.deleteById(snapshot.getId())
+                                    .then(operation.poll(snapshot))
+                                    .then(itemRepository.count())
+                    )
+                    .expectNext(0L)
+                    .verifyComplete();
+
+            assertThat(source.getRequestCount()).isZero();
+        }
     }
 
     @Test

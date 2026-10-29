@@ -1,7 +1,8 @@
 # feed-aggregator
 
 Reactive RSS/feed aggregator built as a practice ground for MongoDB and Reactor/WebFlux.
-The current scope is feed management (M1) and manual fetching of a single feed (M2). Periodic fetching comes in M3.
+The current scope includes feed management (M1), manual fetching (M2) and
+optional periodic polling with isolated failures, retry and poll status (M3).
 
 ## Stack
 
@@ -24,6 +25,24 @@ Start the application on port 8080:
 ```shell
 ./mvnw spring-boot:run
 ```
+
+Periodic polling is disabled by default. Enable it with the default five-minute
+interval:
+
+```shell
+./mvnw spring-boot:run -Dspring-boot.run.arguments=--feeds.polling.enabled=true
+```
+
+The interval accepts Spring duration values such as `30s` or `5m` and must be
+at least one second:
+
+```shell
+./mvnw spring-boot:run \
+  -Dspring-boot.run.arguments="--feeds.polling.enabled=true --feeds.polling.interval=30s"
+```
+
+When enabled, the first cycle starts immediately and later cycles follow the
+configured interval. An overlapping tick is dropped instead of queued.
 
 The connection string lives in `src/main/resources/application.properties`:
 
@@ -50,7 +69,8 @@ All bodies are JSON. Errors always use the shape `{"message": "..."}`, except fo
   "id": "6ac78097a074eb4e5b03e88b",
   "url": "https://example.com/a.xml",
   "title": "Feed A",
-  "createdAt": "2026-10-08T11:37:59.817Z"
+  "createdAt": "2026-10-08T11:37:59.817Z",
+  "pollStatus": null
 }
 ```
 
@@ -60,6 +80,23 @@ All bodies are JSON. Errors always use the shape `{"message": "..."}`, except fo
 | `url` | absolute `http` or `https` URL with a host, unique across all feeds |
 | `title` | non-blank string |
 | `createdAt` | UTC instant, millisecond precision, set by the server |
+| `pollStatus` | `null` until the first scheduled attempt; then contains sanitized polling status |
+
+After a successful scheduled poll, the status looks like this:
+
+```json
+{
+  "lastAttemptAt": "2026-10-29T08:00:00Z",
+  "lastSuccessAt": "2026-10-29T08:00:00.240Z",
+  "outcome": "SUCCESS",
+  "errorType": null,
+  "consecutiveFailures": 0
+}
+```
+
+A failure exposes only the exception type, not its message, source URL or
+stack trace. Success clears the earlier `errorType` and resets
+`consecutiveFailures`.
 
 ### Endpoints
 
@@ -130,6 +167,14 @@ When several fields are invalid at once, only one message is returned: the first
 - **Parsing does not run on the event loop.** Rome is blocking, so parsing runs on `Schedulers.boundedElastic()`. A test asserts the thread name.
 - **Writes run with concurrency 4** (`flatMap`). A duplicate is counted, not treated as an error.
 - **Time limit.** One overall 3 second limit covers connecting, waiting and reading the whole body. Source bodies are capped at 1 MiB.
+- **Scheduled polling is opt-in.** `feeds.polling.enabled=false` and
+  `feeds.polling.interval=5m` are the defaults. Four feeds are processed in
+  parallel. Retryable source failures (timeout, HTTP 5xx and connection
+  failures) receive at most three attempts with bounded backoff; one failed
+  feed does not abort the cycle.
+- **Polling lifecycle is owned by Spring.** Startup creates one subscription;
+  shutdown cancels it immediately. A deleted feed is revalidated before its
+  source is requested.
 
 ## Known limitations
 
@@ -149,6 +194,14 @@ When several fields are invalid at once, only one message is returned: the first
 - **Warning in the logs for oversized bodies.** When a source exceeds 1 MiB, Reactor Netty logs a post-termination `IllegalReferenceCountException`. The API still returns the correct `502` and nothing is stored, but the cause is not resolved. To investigate: run that test with `-Dio.netty.leakDetection.level=paranoid` and check the Reactor Netty version against upstream reports.
 - **Source errors are mapped by type.** Connection and premature-close errors become `502`. Other exception types raised while reading a body would currently surface as Spring's default `500` shape.
 - **Startup fails if the collection already contains duplicate `url` values**, because the unique index cannot be built. This is intended fail-fast behavior; clean the collection or remove the duplicates.
+- **Scheduled polling assumes one application instance.** Multiple instances
+  can poll the same feed and update its failure counter concurrently. Leader
+  election or a distributed lease is not implemented.
+- **Shutdown does not drain the active polling cycle.** In-flight source work,
+  item writes or a status write can be cancelled. Database uniqueness makes
+  already-written items safe to encounter again after restart.
+- **A narrow delete race remains.** If a feed is deleted after scheduled
+  polling revalidates it, item writes can still leave orphans.
 
 ## Project layout
 
@@ -163,6 +216,7 @@ src/main/java/com/nantonijevic/feeds
                  FeedSourceRequestException, FeedSourceTimeoutException,
                  InvalidFeedSourceException, ItemPersistenceException
   parser/        FeedParser (Rome), ParsedFeedItem
+  polling/       polling coordinator, status store, production adapter and lifecycle
   repository/    FeedRepository, ItemRepository
   service/       FeedService, FetchFeedService
   validation/    @AbsoluteHttpUrl and its validator
@@ -174,7 +228,7 @@ src/main/java/com/nantonijevic/feeds
 |---|---|---|
 | M1 | Skeleton, reactive MongoDB, feed CRUD (create, list, get, delete), unique `url` | done |
 | M2 | Fetch and parse a single feed, store items, reject duplicates by unique index | done |
-| M3 | Periodic fetching of N feeds: bounded parallelism, timeout, retry with backoff, isolated failures | planned |
+| M3 | Periodic fetching of N feeds: bounded parallelism, timeout, retry with backoff, isolated failures | done |
 | M4 | Variable-shaped items, aggregations, `explain()` | planned |
 | M5 | Live item stream over SSE backed by change streams | planned |
 | M6 | BlockHound, blocking-call removal, JDWP attach to a Dockerized app | planned |
