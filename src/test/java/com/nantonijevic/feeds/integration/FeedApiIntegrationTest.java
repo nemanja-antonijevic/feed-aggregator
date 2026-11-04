@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import com.nantonijevic.feeds.TestcontainersConfiguration;
@@ -136,6 +137,233 @@ class FeedApiIntegrationTest {
                 .expectStatus().isOk()
                 .expectHeader()
                 .contentType(MediaType.APPLICATION_JSON)
+                .expectBody()
+                .json("[]");
+    }
+
+    @Test
+    void dailyCountsGroupsByPublishedAtUtcDay() {
+        Feed feed = feedRepository.save(new Feed(
+                null,
+                "https://example.com/daily-counts.xml",
+                "Daily counts",
+                Instant.parse("2026-11-01T08:00:00Z")
+        )).block();
+
+        assertThat(feed).isNotNull();
+
+        Item morning = new Item(
+                null,
+                feed.getId(),
+                "morning",
+                "Morning",
+                "https://example.com/items/morning",
+                Instant.parse("2026-11-01T08:15:00Z"),
+                Instant.parse("2026-11-02T10:00:00Z")
+        );
+        Item evening = new Item(
+                null,
+                feed.getId(),
+                "evening",
+                "Evening",
+                "https://example.com/items/evening",
+                Instant.parse("2026-11-01T22:45:00Z"),
+                Instant.parse("2026-11-03T10:00:00Z")
+        );
+
+        StepVerifier.create(itemRepository.saveAll(List.of(morning, evening)))
+                .expectNextCount(2)
+                .verifyComplete();
+
+        webTestClient.get()
+                .uri("/feeds/{id}/items/daily-counts", feed.getId())
+                .exchange()
+                .expectStatus().isOk()
+                .expectHeader().contentType(MediaType.APPLICATION_JSON)
+                .expectBody()
+                .jsonPath("$[0].day").isEqualTo("2026-11-01")
+                .jsonPath("$[0].count").isEqualTo(2)
+                .jsonPath("$[1]").doesNotExist();
+    }
+
+    @Test
+    void dailyCountsFallsBackToFetchedAtWhenPublishedAtIsMissing() {
+        Feed feed = saveFeed("fallback");
+
+        saveItems(new Item(
+                null,
+                feed.getId(),
+                "fallback",
+                "Fallback",
+                "https://example.com/items/fallback",
+                null,
+                Instant.parse("2026-11-04T12:30:00Z")
+        ));
+
+        webTestClient.get()
+                .uri("/feeds/{id}/items/daily-counts", feed.getId())
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$[0].day").isEqualTo("2026-11-04")
+                .jsonPath("$[0].count").isEqualTo(1);
+    }
+
+    @Test
+    void dailyCountsUsesUtcMidnightBoundary() {
+        Feed feed = saveFeed("midnight");
+
+        saveItems(
+                item(
+                        feed,
+                        "before-midnight",
+                        Instant.parse("2026-11-01T23:59:59.999Z")
+                ),
+                item(
+                        feed,
+                        "at-midnight",
+                        Instant.parse("2026-11-02T00:00:00Z")
+                )
+        );
+
+        webTestClient.get()
+                .uri("/feeds/{id}/items/daily-counts", feed.getId())
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$[0].day").isEqualTo("2026-11-01")
+                .jsonPath("$[0].count").isEqualTo(1)
+                .jsonPath("$[1].day").isEqualTo("2026-11-02")
+                .jsonPath("$[1].count").isEqualTo(1);
+    }
+
+    @Test
+    void dailyCountsReturnsDaysInAscendingOrder() {
+        Feed feed = saveFeed("sorting");
+
+        saveItems(
+                item(
+                        feed,
+                        "newest",
+                        Instant.parse("2026-11-03T08:00:00Z")
+                ),
+                item(
+                        feed,
+                        "oldest",
+                        Instant.parse("2026-11-01T08:00:00Z")
+                ),
+                item(
+                        feed,
+                        "middle",
+                        Instant.parse("2026-11-02T08:00:00Z")
+                )
+        );
+
+        webTestClient.get()
+                .uri("/feeds/{id}/items/daily-counts", feed.getId())
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$[0].day").isEqualTo("2026-11-01")
+                .jsonPath("$[1].day").isEqualTo("2026-11-02")
+                .jsonPath("$[2].day").isEqualTo("2026-11-03");
+    }
+
+    @Test
+    void dailyCountsDoesNotMixItemsFromAnotherFeed() {
+        Feed requestedFeed = saveFeed("requested");
+        Feed otherFeed = saveFeed("other");
+
+        saveItems(
+                item(
+                        requestedFeed,
+                        "shared-guid",
+                        Instant.parse("2026-11-01T08:00:00Z")
+                ),
+                item(
+                        otherFeed,
+                        "shared-guid",
+                        Instant.parse("2026-11-01T09:00:00Z")
+                )
+        );
+
+        webTestClient.get()
+                .uri(
+                        "/feeds/{id}/items/daily-counts",
+                        requestedFeed.getId()
+                )
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$[0].count").isEqualTo(1)
+                .jsonPath("$[1]").doesNotExist();
+    }
+
+    @Test
+    void dailyCountsReturnsDocumentedResponseShape() {
+        Feed feed = saveFeed("response-shape");
+        saveItems(item(
+                feed,
+                "response-shape",
+                Instant.parse("2026-11-01T08:00:00Z")
+        ));
+
+        webTestClient.get()
+                .uri("/feeds/{id}/items/daily-counts", feed.getId())
+                .exchange()
+                .expectStatus().isOk()
+                .expectHeader().contentType(MediaType.APPLICATION_JSON)
+                .expectBody()
+                .jsonPath("$[0].feedId").isEqualTo(feed.getId())
+                .jsonPath("$[0].day").isEqualTo("2026-11-01")
+                .jsonPath("$[0].count").isEqualTo(1)
+                .jsonPath("$[0]").value(document -> {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> response =
+                            (Map<String, Object>) document;
+                    assertThat(response).containsOnlyKeys(
+                            "feedId",
+                            "day",
+                            "count"
+                    );
+                });
+    }
+
+    @Test
+    void dailyCountsRejectsMalformedFeedId() {
+        webTestClient.get()
+                .uri("/feeds/not-an-object-id/items/daily-counts")
+                .exchange()
+                .expectStatus().isBadRequest()
+                .expectBody()
+                .jsonPath("$.message")
+                .isEqualTo(
+                        "id must be a valid ObjectId: not-an-object-id"
+                );
+    }
+
+    @Test
+    void dailyCountsReturnsNotFoundForMissingFeed() {
+        String id = "507f1f77bcf86cd799439099";
+
+        webTestClient.get()
+                .uri("/feeds/{id}/items/daily-counts", id)
+                .exchange()
+                .expectStatus().isNotFound()
+                .expectBody()
+                .jsonPath("$.message")
+                .isEqualTo("feed not found: " + id);
+    }
+
+    @Test
+    void dailyCountsReturnsEmptyListForFeedWithoutItems() {
+        Feed feed = saveFeed("empty");
+
+        webTestClient.get()
+                .uri("/feeds/{id}/items/daily-counts", feed.getId())
+                .exchange()
+                .expectStatus().isOk()
+                .expectHeader().contentType(MediaType.APPLICATION_JSON)
                 .expectBody()
                 .json("[]");
     }
@@ -358,6 +586,40 @@ class FeedApiIntegrationTest {
                 .returnResult()
                 .getStatus()
                 .value();
+    }
+
+    private Feed saveFeed(String suffix) {
+        Feed feed = feedRepository.save(new Feed(
+                null,
+                "https://example.com/" + suffix + ".xml",
+                "Daily counts " + suffix,
+                Instant.parse("2026-11-01T07:00:00Z")
+        )).block();
+
+        assertThat(feed).isNotNull();
+        return feed;
+    }
+
+    private Item item(
+            Feed feed,
+            String guid,
+            Instant publishedAt
+    ) {
+        return new Item(
+                null,
+                feed.getId(),
+                guid,
+                guid,
+                "https://example.com/items/" + guid,
+                publishedAt,
+                Instant.parse("2026-11-04T12:00:00Z")
+        );
+    }
+
+    private void saveItems(Item... items) {
+        StepVerifier.create(itemRepository.saveAll(List.of(items)))
+                .expectNextCount(items.length)
+                .verifyComplete();
     }
 
     @Test

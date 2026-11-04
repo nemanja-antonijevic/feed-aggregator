@@ -3,6 +3,7 @@ package com.nantonijevic.feeds.controller;
 import java.net.URI;
 
 import com.nantonijevic.feeds.dto.CreateFeedRequest;
+import com.nantonijevic.feeds.dto.DailyItemCountResponse;
 import com.nantonijevic.feeds.dto.FeedResponse;
 import com.nantonijevic.feeds.dto.FetchFeedResponse;
 import com.nantonijevic.feeds.service.FeedService;
@@ -62,6 +63,13 @@ public class FeedController {
     public Flux<FeedResponse> findAll() {
         return feedService.findAll()
                 .map(FeedResponse::from);
+    }
+
+    @GetMapping("/{id}/items/daily-counts")
+    public Flux<DailyItemCountResponse> dailyCounts(
+            @PathVariable String id
+    ) {
+        return feedService.dailyItemCounts(id);
     }
 
     @DeleteMapping("/{id}")
