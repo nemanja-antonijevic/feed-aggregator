@@ -1,8 +1,10 @@
 # feed-aggregator
 
 Reactive RSS/feed aggregator built as a practice ground for MongoDB and Reactor/WebFlux.
-The current scope includes feed management (M1), manual fetching (M2) and
-optional periodic polling with isolated failures, retry and poll status (M3).
+The current scope includes feed management (M1), manual fetching (M2),
+optional periodic polling with isolated failures, retry and poll status (M3),
+and item modeling with a schema validator, free-form extras and a daily-count
+aggregation answered from a covering index (M4).
 
 ## Stack
 
@@ -107,6 +109,7 @@ stack trace. Success clears the earlier `errorType` and resets
 | `GET` | `/feeds/{id}` | `200`, body = feed | `400` malformed id, `404` not found |
 | `DELETE` | `/feeds/{id}` | `204 No Content`, empty body | `400` malformed id, `404` not found |
 | `POST` | `/feeds/{id}/fetch` | `200`, body = fetch result | `400` malformed id, `404` not found, `422` invalid source, `502` source error, `504` source timeout, `500` item write failed |
+| `GET` | `/feeds/{id}/items/daily-counts` | `200`, JSON array of daily counts (empty array if the feed has no items) | `400` malformed id, `404` not found |
 
 ### Fetch result
 
@@ -124,9 +127,29 @@ stack trace. Success clears the earlier `errorType` and resets
 | `inserted` | entries stored as new items |
 | `duplicates` | entries rejected by the unique index `(feedId, guid)`; `inserted + duplicates = fetched` |
 
+### Daily item counts
+
+```json
+[
+  {"feedId": "6aed66424a96d12721720a0e", "day": "2026-11-01", "count": 2},
+  {"feedId": "6aed66424a96d12721720a0e", "day": "2026-11-03", "count": 1}
+]
+```
+
+| Field | Notes |
+|---|---|
+| `feedId` | the requested feed id, repeated in every element |
+| `day` | UTC calendar day as `YYYY-MM-DD` |
+| `count` | items of that feed whose effective date falls on that day; always at least 1 |
+
+- **Effective date** is `publishedAt`, or `fetchedAt` when the item has no `publishedAt`. An undated item therefore counts on the day it was first stored, not on its real publication day.
+- **Days are UTC.** An entry published `Mon, 02 Nov 2026 00:30:00 +0100` counts toward `2026-11-01`.
+- **Ascending by day.** Days without items are left out, not returned with `count: 0`.
+- **The whole history** of the feed is counted. There is no date range and no pagination.
+
 ### Item object
 
-Items have no read endpoint yet; they are stored in the `items` collection.
+Items have no read endpoint; they are stored in the `items` collection and are visible only through the daily counts.
 
 | Field | Notes |
 |---|---|
@@ -134,8 +157,32 @@ Items have no read endpoint yet; they are stored in the `items` collection.
 | `guid` | required. The entry's `guid` (RSS) or `id` (Atom), trimmed; falls back to the link |
 | `title` | nullable |
 | `link` | nullable if a `guid` exists |
-| `publishedAt` | nullable. A missing or unparseable date becomes `null` |
+| `publishedAt` | optional. A missing or unparseable date leaves the field out of the stored document |
 | `fetchedAt` | UTC instant from the server clock, set once per fetch |
+| `extras` | nested document for source-specific fields, filled by the parser (see below); stored as `{}` when the entry has none of them |
+
+The parser fills `extras` with fixed application keys. The source namespace is not part of the key, and a key is left out when it would be empty:
+
+| Key | Value | Source |
+|---|---|---|
+| `creator` | trimmed string | `dc:creator` or RSS `<author>`; Atom `<author><name>` of the entry |
+| `categories` | list of trimmed strings, in order of first appearance | RSS `<category>`; Atom `<category term>` (the `term`, not the `label`) |
+| `enclosures` | list of objects with optional `url`, `type` and `length` (`long`, only when greater than 0) | RSS `<enclosure>`; Atom `<link rel="enclosure">` |
+
+What Rome decides before the parser sees the entry:
+
+- If an item has both `dc:creator` and `<author>`, only `dc:creator` is kept. Of two `dc:creator` elements, only the first is kept.
+- Repeated categories with the same name and domain collapse into one. The same name with two different `domain` attributes stays twice, and because the domain is not stored, the list contains the name twice.
+- An item that has `<category>` loses its `dc:subject` values.
+- A non-numeric, overflowing or missing `length` arrives as `0`, and a negative one arrives unchanged. The parser keeps `length` only when it is greater than 0, and drops an enclosure that has no `url`, `type` or `length` left.
+- The feed-level Atom author is not copied to entries.
+
+`extras` is validated when an `Item` is constructed, both before writing and when reading from the database:
+
+- keys must be non-blank strings, must not contain `.` and must not start with `$`, at every nesting level;
+- values may be `null`, `String`, `Number`, `Boolean`, `Instant`, a nested map, or a list of these;
+- a `java.util.Date` read back from MongoDB is converted to `Instant`;
+- anything else throws `IllegalArgumentException`.
 
 ### Error messages
 
@@ -164,6 +211,9 @@ When several fields are invalid at once, only one message is returned: the first
 - **Deletion is atomic.** `DELETE` issues a single remove and checks the deleted count, so two concurrent deletes of the same id yield one `204` and one `404`.
 - **Fetch is all-or-nothing before the first write.** The whole response is downloaded, parsed and validated first, so a timeout, HTTP error, HTML page, invalid XML, oversized body or an entry without identity never leaves partial items behind.
 - **Duplicates are decided by the database.** The compound unique index `feed_id_guid_unique` on `(feedId, guid)` is created at startup. Fetching the same feed twice inserts nothing the second time. The same `guid` in two different feeds is stored twice.
+- **Three indexes, each with its own job.** `url_unique` on `feeds` keeps feed URLs unique. `feed_id_guid_unique` on `items` rejects duplicate entries. `feed_id_published_at_fetched_at` on `items` exists only for the daily counts: the `guid` index also starts with `feedId` and could serve the match, but MongoDB would then have to load every document to read the two dates.
+- **Daily counts are answered from the index alone.** The aggregation matches on `feedId` and then projects only the computed day with `_id: 0`. All fields it reads are in `feed_id_published_at_fetched_at`, so no document is loaded. Without `_id: 0` the planner chose `feed_id_guid_unique` instead and examined every document (measured with `explain` in `mongosh`). An integration test runs `explain` over 250 items, 200 of them in the requested feed, and asserts an `IXSCAN` on `feed_id_published_at_fetched_at`, no `COLLSCAN`, `totalKeysExamined = 200` and `totalDocsExamined = 0`.
+- **The `items` collection has a `$jsonSchema` validator** (`validationLevel: strict`, `validationAction: error`). It requires `feedId` (`objectId`), `guid` (non-empty string) and `fetchedAt` (`date`), and constrains the types of `_id`, `title`, `link`, `publishedAt` and `extras`. A write that violates it fails with MongoDB error `121 Document failed validation`. At startup the collection is created with the validator if it is missing, or updated with `collMod` if it exists, and only then are its indexes built. The validator is reapplied on every start.
 - **Parsing does not run on the event loop.** Rome is blocking, so parsing runs on `Schedulers.boundedElastic()`. A test asserts the thread name.
 - **Writes run with concurrency 4** (`flatMap`). A duplicate is counted, not treated as an error.
 - **Time limit.** One overall 3 second limit covers connecting, waiting and reading the whole body. Source bodies are capped at 1 MiB.
@@ -202,23 +252,31 @@ When several fields are invalid at once, only one message is returned: the first
   already-written items safe to encounter again after restart.
 - **A narrow delete race remains.** If a feed is deleted after scheduled
   polling revalidates it, item writes can still leave orphans.
+- **`extras` is written once.** Items are insert-only, so a later fetch of the same entry does not update `extras` (or any other field); the shape from the first fetch stays.
+- **`extras` has no read endpoint.** It can only be seen in the database.
+- **Only three extensions are mapped.** Other elements (for example `media:content`, `itunes:*`, the category `domain`) are dropped.
+- **Atom extras are not covered by tests.** The mapping above was observed by running Rome directly, not by a test in this repository.
+- **`Number` in `extras` is broad.** Any `java.lang.Number` subtype passes the Java check. Whether a given subtype can be stored, and which BSON type it comes back as, depends on the MongoDB codecs and Spring Data converters and is not tested.
+- **The validator does not recheck existing documents.** `collMod` applies the new rules to later inserts and updates only. Documents that were stored before a stricter validator stay as they are until they are modified.
+- **The first start assumes one instance.** Creating the `items` collection checks for its existence and then creates it. Two instances starting at the same time against an empty database can both try to create it, and the second create fails, which aborts that start (not tested). Later starts use `collMod`, which was checked by restarting against an existing collection.
+- **Daily counts have no date range and no pagination** (see [Daily item counts](#daily-item-counts)).
 
 ## Project layout
 
 ```text
 src/main/java/com/nantonijevic/feeds
   client/        FeedSourceClient (WebClient call, error mapping, timeout)
-  config/        FeedIndexConfig (unique indexes), FeedClientConfig (WebClient), TimeConfig (Clock bean)
+  config/        FeedIndexConfig (indexes, items $jsonSchema validator), FeedClientConfig (WebClient), TimeConfig (Clock bean)
   controller/    FeedController, ApiExceptionHandler
   domain/        Feed, Item (MongoDB documents)
-  dto/           CreateFeedRequest, FeedResponse, FetchFeedResponse, ApiError
+  dto/           CreateFeedRequest, FeedResponse, FetchFeedResponse, DailyItemCountResponse, ApiError
   exception/     FeedNotFoundException, InvalidFeedIdException, DuplicateFeedUrlException,
                  FeedSourceRequestException, FeedSourceTimeoutException,
                  InvalidFeedSourceException, ItemPersistenceException
   parser/        FeedParser (Rome), ParsedFeedItem
   polling/       polling coordinator, status store, production adapter and lifecycle
   repository/    FeedRepository, ItemRepository
-  service/       FeedService, FetchFeedService
+  service/       FeedService (feed CRUD, daily counts aggregation), FetchFeedService
   validation/    @AbsoluteHttpUrl and its validator
 ```
 
@@ -229,6 +287,6 @@ src/main/java/com/nantonijevic/feeds
 | M1 | Skeleton, reactive MongoDB, feed CRUD (create, list, get, delete), unique `url` | done |
 | M2 | Fetch and parse a single feed, store items, reject duplicates by unique index | done |
 | M3 | Periodic fetching of N feeds: bounded parallelism, timeout, retry with backoff, isolated failures | done |
-| M4 | Variable-shaped items, aggregations, `explain()` | planned |
+| M4 | Variable-shaped items, aggregations, `explain()` | done |
 | M5 | Live item stream over SSE backed by change streams | planned |
 | M6 | BlockHound, blocking-call removal, JDWP attach to a Dockerized app | planned |

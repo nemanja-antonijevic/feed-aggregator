@@ -282,6 +282,45 @@ HTTP/1.1 400 Bad Request
 
 Not captured from a real run, but covered by integration tests: a body over 1 MiB and a connection closed mid-body return `502` with `feed source body exceeds 1 MiB` and `feed source request failed`.
 
+## Daily item counts
+
+Counts the stored items of one feed per UTC day. The source for this run had four entries: one published `2026-11-01T10:00:00Z`, one published `Mon, 02 Nov 2026 00:30:00 +0100` (which is `2026-11-01T23:30:00Z`), one published `2026-11-03T09:00:00Z`, and one without a `pubDate`, fetched on `2026-11-06`:
+
+```shell
+curl -i "$BASE/feeds/6aed66424a96d12721720a0e/items/daily-counts"
+```
+
+```text
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+[{"feedId":"6aed66424a96d12721720a0e","day":"2026-11-01","count":2},{"feedId":"6aed66424a96d12721720a0e","day":"2026-11-03","count":1},{"feedId":"6aed66424a96d12721720a0e","day":"2026-11-06","count":1}]
+```
+
+The `+0100` entry counts toward `2026-11-01`, not `2026-11-02`, because days are UTC. The undated entry counts on the day it was fetched. `2026-11-02` has no items, so it is left out rather than returned with `count: 0`.
+
+A feed without items returns an empty array:
+
+```text
+HTTP/1.1 200 OK
+
+[]
+```
+
+Unknown and malformed ids return the same errors as `GET /feeds/{id}`:
+
+```text
+HTTP/1.1 404 Not Found
+
+{"message":"feed not found: 6ac78097a074eb4e5b03e88b"}
+```
+
+```text
+HTTP/1.1 400 Bad Request
+
+{"message":"id must be a valid ObjectId: xyz"}
+```
+
 ## Known framework-level error shape
 
 Malformed JSON and an empty body do not use `{"message"}`; they return Spring's default error body:
