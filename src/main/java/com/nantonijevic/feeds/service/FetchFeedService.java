@@ -101,7 +101,8 @@ public class FetchFeedService {
                 parsedItem.title(),
                 parsedItem.link(),
                 parsedItem.publishedAt(),
-                fetchedAt
+                fetchedAt,
+                parsedItem.extras()
         );
 
         return itemRepository.save(item)

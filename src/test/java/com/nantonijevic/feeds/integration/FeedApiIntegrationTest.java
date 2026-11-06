@@ -697,6 +697,81 @@ class FeedApiIntegrationTest {
     }
 
     @Test
+    void fetchStoresVariableItemShapeFromRssExtensions()
+            throws IOException {
+        String rss = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <rss version="2.0"
+                 xmlns:dc="http://purl.org/dc/elements/1.1/">
+              <channel>
+                <title>Example feed</title>
+                <link>https://example.com</link>
+                <description>Example feed</description>
+                <item>
+                  <guid>item-with-extras</guid>
+                  <title>Item with extras</title>
+                  <dc:creator>Ada Lovelace</dc:creator>
+                  <category>Java</category>
+                  <category>Reactive</category>
+                  <enclosure
+                      url="https://example.com/audio.mp3"
+                      type="audio/mpeg"
+                      length="12345"/>
+                </item>
+              </channel>
+            </rss>
+            """;
+
+        try (MockWebServer source = new MockWebServer()) {
+            source.start();
+            source.enqueue(rssResponse(rss));
+
+            Feed feed = feedRepository.save(new Feed(
+                    null,
+                    source.url("/rss.xml").toString(),
+                    "Example",
+                    Instant.parse("2026-10-09T08:00:00Z")
+            )).block();
+
+            assertThat(feed).isNotNull();
+
+            webTestClient.post()
+                    .uri("/feeds/{id}/fetch", feed.getId())
+                    .exchange()
+                    .expectStatus().isOk()
+                    .expectBody()
+                    .jsonPath("$.fetched").isEqualTo(1)
+                    .jsonPath("$.inserted").isEqualTo(1)
+                    .jsonPath("$.duplicates").isEqualTo(0);
+
+            StepVerifier.create(itemRepository.findAll().single())
+                    .assertNext(item -> {
+                        assertThat(item.getExtras())
+                                .containsEntry(
+                                        "creator",
+                                        "Ada Lovelace"
+                                )
+                                .containsEntry(
+                                        "categories",
+                                        List.of("Java", "Reactive")
+                                )
+                                .containsEntry(
+                                        "enclosures",
+                                        List.of(Map.of(
+                                                "url",
+                                                "https://example.com/audio.mp3",
+                                                "type",
+                                                "audio/mpeg",
+                                                "length",
+                                                12345L
+                                        ))
+                                );
+                    })
+                    .verifyComplete();
+        }
+    }
+
+    @Test
     void createsCompoundUniqueIndexForFeedItems() {
         StepVerifier.create(
                         reactiveMongoTemplate

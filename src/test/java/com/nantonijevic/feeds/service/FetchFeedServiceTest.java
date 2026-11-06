@@ -4,6 +4,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.nantonijevic.feeds.client.FeedSourceClient;
@@ -17,6 +18,7 @@ import com.nantonijevic.feeds.repository.ItemRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import reactor.core.publisher.Mono;
@@ -24,6 +26,7 @@ import reactor.test.StepVerifier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -164,5 +167,59 @@ class FetchFeedServiceTest {
 
         assertThat(parserThread.get())
                 .startsWith("boundedElastic-");
+    }
+
+    @Test
+    void storesParsedExtrasOnItem() {
+        byte[] body = "<rss/>".getBytes();
+        Map<String, Object> extras = Map.of(
+                "creator",
+                "Ada Lovelace",
+                "enclosures",
+                List.of(Map.of(
+                        "url",
+                        "https://example.com/audio.mp3",
+                        "length",
+                        12345L
+                ))
+        );
+        Feed feed = new Feed(
+                FEED_ID,
+                FEED_URL,
+                "Example",
+                NOW
+        );
+        ParsedFeedItem parsedItem = new ParsedFeedItem(
+                "item-1",
+                "Item",
+                "https://example.com/items/1",
+                NOW,
+                extras
+        );
+
+        when(feedService.findById(FEED_ID))
+                .thenReturn(Mono.just(feed));
+        when(feedSourceClient.fetch(FEED_URL))
+                .thenReturn(Mono.just(body));
+        when(feedParser.parse(body))
+                .thenReturn(List.of(parsedItem));
+        when(itemRepository.save(any(Item.class)))
+                .thenAnswer(invocation ->
+                        Mono.just(invocation.getArgument(0))
+                );
+
+        StepVerifier.create(fetchFeedService.fetch(FEED_ID))
+                .assertNext(response -> {
+                    assertThat(response.fetched()).isOne();
+                    assertThat(response.inserted()).isOne();
+                    assertThat(response.duplicates()).isZero();
+                })
+                .verifyComplete();
+
+        ArgumentCaptor<Item> itemCaptor =
+                ArgumentCaptor.forClass(Item.class);
+        verify(itemRepository).save(itemCaptor.capture());
+        assertThat(itemCaptor.getValue().getExtras())
+                .isEqualTo(extras);
     }
 }
