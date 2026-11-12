@@ -3,11 +3,14 @@ package com.nantonijevic.feeds.controller;
 import java.util.Comparator;
 
 import com.nantonijevic.feeds.dto.ApiError;
+import com.nantonijevic.feeds.exception.ChangeStreamHistoryLostException;
 import com.nantonijevic.feeds.exception.DuplicateFeedUrlException;
 import com.nantonijevic.feeds.exception.FeedNotFoundException;
 import com.nantonijevic.feeds.exception.FeedSourceRequestException;
 import com.nantonijevic.feeds.exception.FeedSourceTimeoutException;
 import com.nantonijevic.feeds.exception.InvalidFeedIdException;
+import com.nantonijevic.feeds.exception.InvalidResumeTokenException;
+import com.nantonijevic.feeds.exception.ItemStreamBackpressureException;
 import com.nantonijevic.feeds.exception.InvalidFeedSourceException;
 import com.nantonijevic.feeds.exception.ItemPersistenceException;
 import org.springframework.http.HttpStatus;
@@ -28,6 +31,30 @@ public class ApiExceptionHandler {
     @ExceptionHandler(InvalidFeedIdException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     ApiError handleInvalidId(InvalidFeedIdException exception) {
+        return new ApiError(exception.getMessage());
+    }
+
+    @ExceptionHandler(InvalidResumeTokenException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    ApiError handleInvalidResumeToken(
+            InvalidResumeTokenException exception
+    ) {
+        return new ApiError(exception.getMessage());
+    }
+
+    @ExceptionHandler(ChangeStreamHistoryLostException.class)
+    @ResponseStatus(HttpStatus.GONE)
+    ApiError handleChangeStreamHistoryLost(
+            ChangeStreamHistoryLostException exception
+    ) {
+        return new ApiError(exception.getMessage());
+    }
+
+    @ExceptionHandler(ItemStreamBackpressureException.class)
+    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
+    ApiError handleItemStreamBackpressure(
+            ItemStreamBackpressureException exception
+    ) {
         return new ApiError(exception.getMessage());
     }
 

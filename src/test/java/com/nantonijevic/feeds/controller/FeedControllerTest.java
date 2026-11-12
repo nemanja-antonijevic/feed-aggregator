@@ -11,6 +11,7 @@ import com.nantonijevic.feeds.exception.InvalidFeedIdException;
 import com.nantonijevic.feeds.exception.ItemPersistenceException;
 import com.nantonijevic.feeds.service.FeedService;
 import com.nantonijevic.feeds.service.FetchFeedService;
+import com.nantonijevic.feeds.service.ItemStreamService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -42,6 +43,9 @@ class FeedControllerTest {
 
     @MockitoBean
     private FetchFeedService fetchFeedService;
+
+    @MockitoBean
+    private ItemStreamService itemStreamService;
 
     @Test
     void createsFeed() {
