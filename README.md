@@ -62,7 +62,7 @@ Ready-to-run requests are in [`curls.md`](curls.md).
 
 ## API
 
-All bodies are JSON. Errors always use the shape `{"message": "..."}`, except for the framework-level cases listed under [Known limitations](#known-limitations).
+JSON endpoints use the error shape `{"message": "..."}`, except for the framework-level cases listed under [Known limitations](#known-limitations). The live item stream uses Server-Sent Events after the feed has been validated.
 
 ### Feed object
 
@@ -110,6 +110,7 @@ stack trace. Success clears the earlier `errorType` and resets
 | `DELETE` | `/feeds/{id}` | `204 No Content`, empty body | `400` malformed id, `404` not found |
 | `POST` | `/feeds/{id}/fetch` | `200`, body = fetch result | `400` malformed id, `404` not found, `422` invalid source, `502` source error, `504` source timeout, `500` item write failed |
 | `GET` | `/feeds/{id}/items/daily-counts` | `200`, JSON array of daily counts (empty array if the feed has no items) | `400` malformed id, `404` not found |
+| `GET` | `/feeds/{id}/items/stream` | `200`, `text/event-stream`, inserted items for one feed | `400` malformed id or invalid `Last-Event-ID`, `404` not found, `410` resume history lost before the stream starts |
 
 ### Fetch result
 
@@ -146,6 +147,21 @@ stack trace. Success clears the earlier `errorType` and resets
 - **Days are UTC.** An entry published `Mon, 02 Nov 2026 00:30:00 +0100` counts toward `2026-11-01`.
 - **Ascending by day.** Days without items are left out, not returned with `count: 0`.
 - **The whole history** of the feed is counted. There is no date range and no pagination.
+
+### Live item stream
+
+`GET /feeds/{id}/items/stream` opens one SSE connection for one feed. It sends only newly inserted items as `event: item`; each event's `id:` is the JSON-serialized MongoDB change-stream resume token, and `data:` is an `ItemResponse` DTO. The entity is not serialized directly.
+
+Send the last event id on reconnect to resume exclusively after that token:
+
+```shell
+curl -N -H 'Last-Event-ID: {"_data":"<resume-token>"}' \
+  "$BASE/feeds/6ac78097a074eb4e5b03e88b/items/stream"
+```
+
+Without `Last-Event-ID`, the stream starts at the cursor's open point and does not replay earlier inserts. An insert between the feed lookup and cursor open can be missed. A duplicate fetch creates no insert and emits no event. `:keepalive` comments are sent every 15 seconds by default.
+
+The heartbeat interval and bounded item buffer can be changed with `feeds.stream.heartbeat-interval` and `feeds.stream.buffer-capacity` (defaults `15s` and `256`). A full buffer terminates the stream with an error; it does not discard items. The server does not reconnect the MongoDB change stream automatically. Clients can recover after an interruption by reconnecting with the last event id.
 
 ### Item object
 
@@ -254,6 +270,8 @@ When several fields are invalid at once, only one message is returned: the first
   polling revalidates it, item writes can still leave orphans.
 - **`extras` is written once.** Items are insert-only, so a later fetch of the same entry does not update `extras` (or any other field); the shape from the first fetch stays.
 - **`extras` has no read endpoint.** It can only be seen in the database.
+- **Live stream scope.** A feed deleted while its stream is open leaves the stream open and idle. There is no limit on concurrent streams, authentication, or per-client quota.
+- **Live stream start gap.** Inserts between feed validation and cursor creation can be missed when the client connects without a resume token; there is no replay or `startAtOperationTime` in that case.
 - **Only three extensions are mapped.** Other elements (for example `media:content`, `itunes:*`, the category `domain`) are dropped.
 - **Atom extras are not covered by tests.** The mapping above was observed by running Rome directly, not by a test in this repository.
 - **`Number` in `extras` is broad.** Any `java.lang.Number` subtype passes the Java check. Whether a given subtype can be stored, and which BSON type it comes back as, depends on the MongoDB codecs and Spring Data converters and is not tested.

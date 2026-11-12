@@ -335,3 +335,21 @@ Content-Type: application/json
 
 {"timestamp":"2026-10-08T11:38:03.279Z","path":"/feeds","status":400,"error":"Bad Request","requestId":"3a6eadfb-16"}
 ```
+
+## Live item stream
+
+Open one stream for one feed. `-N` disables curl's output buffering. Each newly inserted item arrives as an `item` event; idle streams receive a `:keepalive` comment every 15 seconds by default:
+
+```shell
+curl -N "$BASE/feeds/6ac78097a074eb4e5b03e88b/items/stream"
+```
+
+The `id:` value is a JSON MongoDB resume token. Keep it and send it as `Last-Event-ID` to reconnect after the last event received:
+
+```shell
+curl -N \
+  -H 'Last-Event-ID: {"_data":"<resume-token>"}' \
+  "$BASE/feeds/6ac78097a074eb4e5b03e88b/items/stream"
+```
+
+`resumeAfter` is exclusive: the event whose token was supplied is not repeated. Without the header, the stream does not replay items already inserted. The heartbeat interval and bounded buffer are configurable with `feeds.stream.heartbeat-interval` (default `15s`) and `feeds.stream.buffer-capacity` (default `256`). Buffer overflow ends the stream with an error; reconnect with the last `id:` to resume. A feed removed while connected leaves its stream open and idle. Concurrent-stream limits and authentication are not implemented.
