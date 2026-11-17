@@ -10,6 +10,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import com.mongodb.MongoCommandException;
+import com.mongodb.MongoException;
 import com.nantonijevic.feeds.TestcontainersConfiguration;
 import com.nantonijevic.feeds.domain.Feed;
 import com.nantonijevic.feeds.domain.Item;
@@ -19,6 +21,7 @@ import com.nantonijevic.feeds.repository.ItemRepository;
 import mockwebserver3.MockResponse;
 import mockwebserver3.MockWebServer;
 import org.bson.BsonDocument;
+import org.bson.BsonString;
 import org.bson.Document;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -246,12 +249,80 @@ class ItemStreamIntegrationTest {
     }
 
     @Test
+    void unknownResumeTokenReturnsJsonApiErrorBeforeStreaming() {
+        Feed feed = saveFeed("unknown-resume");
+        FluxExchangeResult<ServerSentEvent<ItemResponse>> response =
+                openStream(feed.getId());
+        saveItem(feed, "resume-token-source", Map.of());
+        ServerSentEvent<ItemResponse> event = nextItem(response);
+
+        BsonDocument unavailableToken = BsonDocument.parse(event.id());
+        String resumeTokenData = unavailableToken.getString("_data").getValue();
+        assertThat(resumeTokenData).startsWith("82");
+        String timestamp = resumeTokenData.substring(2, 18);
+        unavailableToken.put(
+                "_data",
+                new BsonString(
+                        resumeTokenData.substring(0, 2)
+                                + "0000000000000001"
+                                + resumeTokenData.substring(18)
+                )
+        );
+        assertThat(unavailableToken.getString("_data").getValue())
+                .as("resumeAfter uses a parsable token with an absent timestamp")
+                .startsWith("820000000000000001");
+        assertThat(timestamp).isNotEqualTo("0000000000000001");
+
+        StepVerifier.create(reactiveMongoTemplate
+                        .changeStream(Item.class)
+                        .watchCollection("items")
+                        .resumeAfter(unavailableToken)
+                        .listen())
+                .expectErrorSatisfies(error -> {
+                    MongoException mongoException = findMongoException(error);
+                    if (mongoException.getCode() == 286) {
+                        return;
+                    }
+
+                    assertThat(mongoException.getCode()).isEqualTo(280);
+                    assertThat(mongoException)
+                            .isInstanceOf(MongoCommandException.class);
+                    MongoCommandException commandException =
+                            (MongoCommandException) mongoException;
+                    assertThat(commandException.getErrorCodeName())
+                            .isEqualTo("ChangeStreamFatalError");
+                    assertThat(commandException.hasErrorLabel(
+                            "NonResumableChangeStreamError"
+                    )).isTrue();
+                    assertThat(commandException.getErrorMessage())
+                            .contains("resume token was not found");
+                })
+                .verify(Duration.ofSeconds(5));
+
+        webTestClient.get()
+                .uri("/feeds/{id}/items/stream", feed.getId())
+                .header("Last-Event-ID", unavailableToken.toJson())
+                .accept(MediaType.TEXT_EVENT_STREAM)
+                .exchange()
+                .expectStatus().isEqualTo(410)
+                .expectHeader()
+                .contentTypeCompatibleWith(MediaType.APPLICATION_JSON)
+                .expectBody()
+                .jsonPath("$.message")
+                .isEqualTo(
+                        "resume token is no longer available; reconnect "
+                                + "without Last-Event-ID to start from now"
+                );
+    }
+
+    @Test
     void malformedIdsAndResumeTokensReturnJsonApiErrorsBeforeStreaming() {
         Feed feed = saveFeed("bad-token");
 
         webTestClient.get()
                 .uri("/feeds/{id}/items/stream", feed.getId())
                 .header("Last-Event-ID", "not-json")
+                .accept(MediaType.TEXT_EVENT_STREAM)
                 .exchange()
                 .expectStatus().isBadRequest()
                 .expectHeader().contentType(MediaType.APPLICATION_JSON)
@@ -261,6 +332,7 @@ class ItemStreamIntegrationTest {
 
         webTestClient.get()
                 .uri("/feeds/abc/items/stream")
+                .accept(MediaType.TEXT_EVENT_STREAM)
                 .exchange()
                 .expectStatus().isBadRequest()
                 .expectHeader().contentType(MediaType.APPLICATION_JSON)
@@ -271,6 +343,7 @@ class ItemStreamIntegrationTest {
         String missingId = "507f1f77bcf86cd799439099";
         webTestClient.get()
                 .uri("/feeds/{id}/items/stream", missingId)
+                .accept(MediaType.TEXT_EVENT_STREAM)
                 .exchange()
                 .expectStatus().isNotFound()
                 .expectHeader().contentType(MediaType.APPLICATION_JSON)
@@ -451,6 +524,15 @@ class ItemStreamIntegrationTest {
         Document cursors = metrics.get("cursor", Document.class);
         Document open = cursors.get("open", Document.class);
         return open.get("total", Number.class).intValue();
+    }
+
+    private MongoException findMongoException(Throwable error) {
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            if (cause instanceof MongoException mongoException) {
+                return mongoException;
+            }
+        }
+        throw new AssertionError("expected a MongoException in the cause chain", error);
     }
 
     private void awaitCursorCount(

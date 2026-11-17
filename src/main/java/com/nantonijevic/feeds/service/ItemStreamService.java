@@ -2,6 +2,7 @@ package com.nantonijevic.feeds.service;
 
 import java.time.Duration;
 
+import com.mongodb.MongoCommandException;
 import com.mongodb.MongoException;
 import com.nantonijevic.feeds.config.FeedStreamProperties;
 import com.nantonijevic.feeds.domain.Item;
@@ -153,11 +154,28 @@ public class ItemStreamService {
     private Throwable mapStreamError(Throwable error) {
         Throwable unwrapped = Exceptions.unwrap(error);
         if (unwrapped instanceof MongoException mongoException
-                && mongoException.getCode()
-                == CHANGE_STREAM_HISTORY_LOST_CODE) {
+                && isChangeStreamHistoryLost(mongoException)) {
             return new ChangeStreamHistoryLostException(unwrapped);
         }
 
         return unwrapped;
+    }
+
+    private boolean isChangeStreamHistoryLost(MongoException exception) {
+        if (exception.getCode() == CHANGE_STREAM_HISTORY_LOST_CODE) {
+            return true;
+        }
+
+        return exception instanceof MongoCommandException commandException
+                && commandException.getCode() == 280
+                && "ChangeStreamFatalError".equals(
+                        commandException.getErrorCodeName()
+                )
+                && commandException.hasErrorLabel(
+                        "NonResumableChangeStreamError"
+                )
+                && commandException.getErrorMessage() != null
+                && commandException.getErrorMessage()
+                        .contains("resume token was not found");
     }
 }

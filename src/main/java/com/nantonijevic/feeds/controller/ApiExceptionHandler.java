@@ -10,10 +10,11 @@ import com.nantonijevic.feeds.exception.FeedSourceRequestException;
 import com.nantonijevic.feeds.exception.FeedSourceTimeoutException;
 import com.nantonijevic.feeds.exception.InvalidFeedIdException;
 import com.nantonijevic.feeds.exception.InvalidResumeTokenException;
-import com.nantonijevic.feeds.exception.ItemStreamBackpressureException;
 import com.nantonijevic.feeds.exception.InvalidFeedSourceException;
 import com.nantonijevic.feeds.exception.ItemPersistenceException;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -23,39 +24,29 @@ import org.springframework.web.bind.support.WebExchangeBindException;
 public class ApiExceptionHandler {
 
     @ExceptionHandler(FeedNotFoundException.class)
-    @ResponseStatus(HttpStatus.NOT_FOUND)
-    ApiError handleNotFound(FeedNotFoundException exception) {
-        return new ApiError(exception.getMessage());
+    ResponseEntity<ApiError> handleNotFound(FeedNotFoundException exception) {
+        return apiError(HttpStatus.NOT_FOUND, exception);
     }
 
     @ExceptionHandler(InvalidFeedIdException.class)
-    @ResponseStatus(HttpStatus.BAD_REQUEST)
-    ApiError handleInvalidId(InvalidFeedIdException exception) {
-        return new ApiError(exception.getMessage());
+    ResponseEntity<ApiError> handleInvalidId(InvalidFeedIdException exception) {
+        return apiError(HttpStatus.BAD_REQUEST, exception);
     }
 
     @ExceptionHandler(InvalidResumeTokenException.class)
-    @ResponseStatus(HttpStatus.BAD_REQUEST)
-    ApiError handleInvalidResumeToken(
+    ResponseEntity<ApiError> handleInvalidResumeToken(
             InvalidResumeTokenException exception
     ) {
-        return new ApiError(exception.getMessage());
+        return apiError(HttpStatus.BAD_REQUEST, exception);
     }
 
     @ExceptionHandler(ChangeStreamHistoryLostException.class)
-    @ResponseStatus(HttpStatus.GONE)
-    ApiError handleChangeStreamHistoryLost(
+    ResponseEntity<ApiError> handleChangeStreamHistoryLost(
             ChangeStreamHistoryLostException exception
     ) {
-        return new ApiError(exception.getMessage());
-    }
-
-    @ExceptionHandler(ItemStreamBackpressureException.class)
-    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
-    ApiError handleItemStreamBackpressure(
-            ItemStreamBackpressureException exception
-    ) {
-        return new ApiError(exception.getMessage());
+        return ResponseEntity.status(HttpStatus.GONE)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(new ApiError(exception.getMessage()));
     }
 
     @ExceptionHandler(DuplicateFeedUrlException.class)
@@ -109,5 +100,14 @@ public class ApiExceptionHandler {
             ItemPersistenceException exception
     ) {
         return new ApiError(exception.getMessage());
+    }
+
+    private ResponseEntity<ApiError> apiError(
+            HttpStatus status,
+            RuntimeException exception
+    ) {
+        return ResponseEntity.status(status)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(new ApiError(exception.getMessage()));
     }
 }
