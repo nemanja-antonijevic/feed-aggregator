@@ -40,10 +40,12 @@ is never released" and "event that is silently lost".
    cursor opening can be missed; this is a documented gap, not a bug to fix here.
 7. A connection with `Last-Event-ID: <token>` resumes after that token (`resumeAfter`) and receives
    every later insert for the feed exactly once, including those inserted while the client was away.
-8. An unparsable token returns 400 `ApiError` before the stream opens. A parsable token whose oplog
-   position no longer exists is a server-side `ChangeStreamHistoryLost`. Whether this can still be
-   turned into a status code (response not yet committed) is an open prediction (Step 1, item 6);
-   the contract is "client gets a clear terminal error, not a hung connection".
+8. An unparsable token returns 400 JSON `ApiError` before the stream opens. Any parsable token that
+   MongoDB cannot resume (unknown position or history rolled off the oplog) returns 410 JSON
+   `ApiError` before the first SSE frame; reconnect without `Last-Event-ID` to start from now.
+   MongoDB 8.0 in Testcontainers returns code 280 for the tested unknown token and may return 286
+   for history loss. The integration test covers an unknown token with an absent timestamp, not an
+   actual oplog rollover; the classifier for both server errors is unit-tested.
 
 ### Idle connections, cancellation, backpressure
 
@@ -68,6 +70,9 @@ is never released" and "event that is silently lost".
 - A feed deleted while a stream is open: the stream stays open and idle, heartbeats continue.
 - Limit on concurrent streams (each one is an open server cursor).
 - Authentication and per-client quotas.
+- Backpressure overflow — **not covered via HTTP**: overflow follows SSE frames that commit the
+  response, and TCP/Netty buffers make a slow-reader HTTP test transport-dependent. The unit test
+  covers bounded overflow and prefix preservation.
 
 ## Step 1: predictions, written before any code
 
@@ -101,8 +106,9 @@ All tests run against the Testcontainers MongoDB replica set, with a real HTTP e
 - Heartbeat: with a millisecond interval, a comment frame arrives on an idle stream.
 - Cancellation: baseline `serverStatus.metrics.cursor.open.total`, open a stream, assert it rose,
   cancel the client, assert it returns to baseline within a bounded polling window (no fixed sleep).
-- Backpressure: a subscriber that requests nothing while more than the buffer capacity of items is
-  inserted terminates with the overflow error, and delivered items are a prefix with no gap.
+- Backpressure (unit test; not covered via HTTP): a subscriber that requests nothing while more
+  than the buffer capacity of items is inserted terminates with the overflow error, and delivered
+  items are a prefix with no gap.
 
 ## Step 3: mutations
 
@@ -134,5 +140,6 @@ Each must make at least one test fail; a surviving mutation is a missing test, r
 
 Contract decisions 1-12 each map to a test or to an explicit "not covered" line; seven mutations
 killed or recorded; docs updated (`README.md`, `curls.md`: endpoint, resume with `Last-Event-ID`,
-heartbeat and buffer properties, known gaps); Debug run recorded; cold review of the diff after the
-tests are green.
+heartbeat and buffer properties, known gaps); cold review of the diff after the tests are green.
+Step 4 (Debug run) is not covered: Debug runs were dropped from sessions by decision on 2026-11-16;
+the Step 1 predictions were checked through tests and recorded in `debug-log.md`.

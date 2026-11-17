@@ -110,7 +110,7 @@ stack trace. Success clears the earlier `errorType` and resets
 | `DELETE` | `/feeds/{id}` | `204 No Content`, empty body | `400` malformed id, `404` not found |
 | `POST` | `/feeds/{id}/fetch` | `200`, body = fetch result | `400` malformed id, `404` not found, `422` invalid source, `502` source error, `504` source timeout, `500` item write failed |
 | `GET` | `/feeds/{id}/items/daily-counts` | `200`, JSON array of daily counts (empty array if the feed has no items) | `400` malformed id, `404` not found |
-| `GET` | `/feeds/{id}/items/stream` | `200`, `text/event-stream`, inserted items for one feed | `400` malformed id or invalid `Last-Event-ID`, `404` not found, `410` resume history lost before the stream starts |
+| `GET` | `/feeds/{id}/items/stream` | `200`, `text/event-stream`, inserted items for one feed | `400` malformed id or invalid `Last-Event-ID`, `404` not found, `410` resume token unavailable before the stream starts |
 
 ### Fetch result
 
@@ -160,6 +160,8 @@ curl -N -H 'Last-Event-ID: {"_data":"<resume-token>"}' \
 ```
 
 Without `Last-Event-ID`, the stream starts at the cursor's open point and does not replay earlier inserts. An insert between the feed lookup and cursor open can be missed. A duplicate fetch creates no insert and emits no event. `:keepalive` comments are sent every 15 seconds by default.
+
+A well-formed `Last-Event-ID` that MongoDB cannot resume returns a JSON `ApiError` with status `410` before the SSE response starts. Reconnect without `Last-Event-ID` to start from now. The integration test covers an unknown token in a fresh replica set; it does not simulate an oplog rollover.
 
 The heartbeat interval and bounded item buffer can be changed with `feeds.stream.heartbeat-interval` and `feeds.stream.buffer-capacity` (defaults `15s` and `256`). A full buffer terminates the stream with an error; it does not discard items. The server does not reconnect the MongoDB change stream automatically. Clients can recover after an interruption by reconnecting with the last event id.
 
@@ -306,5 +308,5 @@ src/main/java/com/nantonijevic/feeds
 | M2 | Fetch and parse a single feed, store items, reject duplicates by unique index | done |
 | M3 | Periodic fetching of N feeds: bounded parallelism, timeout, retry with backoff, isolated failures | done |
 | M4 | Variable-shaped items, aggregations, `explain()` | done |
-| M5 | Live item stream over SSE backed by change streams | planned |
+| M5 | Live item stream over SSE backed by change streams | done |
 | M6 | BlockHound, blocking-call removal, JDWP attach to a Dockerized app | planned |
