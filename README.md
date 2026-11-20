@@ -58,6 +58,14 @@ Run all tests (needs Docker for Testcontainers):
 ./mvnw verify
 ```
 
+### BlockHound tests
+
+BlockHound is test-only and installs once before the first Spring test context; the canary verifies
+that `Thread.sleep` on a Reactor `parallel` worker fails with `BlockingOperationError`. For a real
+report, start at the first frame in `com.nantonijevic.feeds`: application calls must be moved off a
+non-blocking thread, while any framework/driver allowance is narrow and documented in the test
+listener.
+
 Ready-to-run requests are in [`curls.md`](curls.md).
 
 ## API
@@ -250,7 +258,7 @@ When several fields are invalid at once, only one message is returned: the first
 - **No pagination** on `GET /feeds` (see above).
 - **Framework-level errors use Spring's default shape.** Malformed JSON and an empty request body on `POST /feeds` return `400` with `{"timestamp", "path", "status", "error", "requestId"}` instead of `{"message"}`.
 - **No upper bound on `url` and `title` length.**
-- **The replica set member is registered as `localhost:27017`.** This works for an application running on the host, but it will not resolve from another container (needed from M6, when the application runs in Docker).
+- **The replica set member is registered as `localhost:27017`.** This works for an application running on the host, but it will not resolve from another container. M6 does not containerize the app; Docker/JDWP attach is not covered.
 - **The feed URL is not restricted (SSRF).** `POST /feeds/{id}/fetch` makes the server request any stored `http` or `https` URL, including loopback and private addresses. There is no allow list and no authentication. Do not expose the service beyond localhost before this is closed.
 - **Redirects are not followed.** A source that answers `301` or `302` produces `502 feed source returned HTTP 301`.
 - **One bad entry rejects the whole feed.** An entry with neither `guid` nor link makes every fetch of that feed return `422`.
@@ -309,4 +317,4 @@ src/main/java/com/nantonijevic/feeds
 | M3 | Periodic fetching of N feeds: bounded parallelism, timeout, retry with backoff, isolated failures | done |
 | M4 | Variable-shaped items, aggregations, `explain()` | done |
 | M5 | Live item stream over SSE backed by change streams | done |
-| M6 | BlockHound, blocking-call removal, JDWP attach to a Dockerized app | planned |
+| M6 | BlockHound audit and boundedElastic fix for a demonstrated blocking call (Docker/JDWP attach: not covered) | done |
