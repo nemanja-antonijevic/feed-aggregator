@@ -221,6 +221,7 @@ What Rome decides before the parser sees the entry:
 | `409` | `url already exists` |
 | `422` | `feed source returned an invalid feed` (malformed XML, or an entry with neither `guid` nor link) |
 | `422` | `feed source did not return an RSS or Atom feed` (`Content-Type: text/html`) |
+| `422` | `feed source address is not allowed` (the host resolves to a blocked address; see Known limitations) |
 | `502` | `feed source returned HTTP <status>` (any non-2xx, redirects included) |
 | `502` | `feed source body exceeds 1 MiB` |
 | `502` | `feed source request failed` (connection error or connection closed mid-body) |
@@ -259,7 +260,7 @@ When several fields are invalid at once, only one message is returned: the first
 - **Framework-level errors use Spring's default shape.** Malformed JSON and an empty request body on `POST /feeds` return `400` with `{"timestamp", "path", "status", "error", "requestId"}` instead of `{"message"}`.
 - **No upper bound on `url` and `title` length.**
 - **The replica set member is registered as `localhost:27017`.** This works for an application running on the host, but it will not resolve from another container. M6 does not containerize the app; Docker/JDWP attach is not covered.
-- **The feed URL is not restricted (SSRF).** `POST /feeds/{id}/fetch` makes the server request any stored `http` or `https` URL, including loopback and private addresses. There is no allow list and no authentication. Do not expose the service beyond localhost before this is closed.
+- **Source addresses are filtered, not allow-listed (SSRF).** At connection time the resolver refuses a host if any of its addresses is loopback, any-local, link-local (including `169.254.169.254`), private (`10/8`, `172.16/12`, `192.168/16`), IPv6 unique-local (`fc00::/7`), carrier-grade NAT (`100.64/10`) or multicast; an IPv4-mapped IPv6 address is judged as its IPv4 address. Such a feed fails with `422 feed source address is not allowed`, is not retried, and the source is never contacted. The default is `feeds.source.allow-private-addresses=false`; set it to `true` to demo against `localhost` or an internal host. Not covered: the deprecated IPv6 site-local range `fec0::/10` and NAT64 (`64:ff9b::/96`) are not blocked, there is no allow list, no authentication and no port restriction. Do not expose the service beyond localhost before those are decided.
 - **Redirects are not followed.** A source that answers `301` or `302` produces `502 feed source returned HTTP 301`.
 - **One bad entry rejects the whole feed.** An entry with neither `guid` nor link makes every fetch of that feed return `422`.
 - **Unexpected database errors can leave partial writes.** There is no transaction; a failure in the middle of the batch returns `500` and items written before it stay.
@@ -267,8 +268,8 @@ When several fields are invalid at once, only one message is returned: the first
 - **No normalization of `guid` or link.** Values are only trimmed.
 - **Deleting a feed does not delete its items.** Orphaned items stay in the `items` collection.
 - **The 3 second overall limit is tight for large feeds on slow servers**, which return `504`.
-- **Warning in the logs for oversized bodies.** When a source exceeds 1 MiB, Reactor Netty logs a post-termination `IllegalReferenceCountException`. The API still returns the correct `502` and nothing is stored, but the cause is not resolved. To investigate: run that test with `-Dio.netty.leakDetection.level=paranoid` and check the Reactor Netty version against upstream reports.
-- **Source errors are mapped by type.** Connection and premature-close errors become `502`. Other exception types raised while reading a body would currently surface as Spring's default `500` shape.
+- **Oversized bodies are not fixed at the application read layer.** Bodies over 1 MiB still return `502` with `feed source body exceeds 1 MiB`. A real 8 MiB WebClient test on Reactor Netty `1.3.7` / Netty `4.2.17.Final` with paranoid leak detection logged neither `LEAK:` nor `IllegalReferenceCountException`; the regression test keeps capturing these diagnostics. The historical exception matches [Reactor Netty #1374](https://github.com/reactor/reactor-netty/issues/1374), which describes post-termination noise around `DataBufferLimitException` and was closed without an application fix; related [Spring Framework #26060](https://github.com/spring-projects/spring-framework/issues/26060). If it reappears on another version, inspect the root `DataBufferLimitException` before treating it as a leak.
+- **Unexpected feed-source errors are non-retryable.** Errors without a more specific source mapping become `502` with `feed source request failed`; the client logs the original cause class at `WARN` and keeps the cause attached. Existing timeout, connection, HTTP status, and oversized-body mappings are preserved.
 - **Startup fails if the collection already contains duplicate `url` values**, because the unique index cannot be built. This is intended fail-fast behavior; clean the collection or remove the duplicates.
 - **Scheduled polling assumes one application instance.** Multiple instances
   can poll the same feed and update its failure counter concurrently. Leader
