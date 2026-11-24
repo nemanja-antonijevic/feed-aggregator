@@ -38,7 +38,7 @@ import reactor.test.StepVerifier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
+@SpringBootTest(properties = "feeds.source.allow-private-addresses=true")
 @AutoConfigureWebTestClient
 @Import(TestcontainersConfiguration.class)
 class FeedApiIntegrationTest {

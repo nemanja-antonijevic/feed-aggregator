@@ -7,6 +7,7 @@ import com.nantonijevic.feeds.domain.Feed;
 import com.nantonijevic.feeds.domain.PollOutcome;
 import com.nantonijevic.feeds.domain.PollStatus;
 import com.nantonijevic.feeds.exception.FeedNotFoundException;
+import com.nantonijevic.feeds.exception.FeedSourceRequestException;
 import com.nantonijevic.feeds.exception.InvalidFeedIdException;
 import com.nantonijevic.feeds.exception.ItemPersistenceException;
 import com.nantonijevic.feeds.service.FeedService;
@@ -276,6 +277,23 @@ class FeedControllerTest {
                 .expectBody()
                 .jsonPath("$.message")
                 .isEqualTo("item persistence failed");
+    }
+
+    @Test
+    void feedSourceRequestFailureReturnsBadGateway() {
+        when(fetchFeedService.fetch(ID))
+                .thenReturn(Mono.error(new FeedSourceRequestException(
+                        "feed source request failed",
+                        new IllegalStateException("unknown source error")
+                )));
+
+        webTestClient.post()
+                .uri("/feeds/{id}/fetch", ID)
+                .exchange()
+                .expectStatus().isEqualTo(HttpStatus.BAD_GATEWAY)
+                .expectBody()
+                .jsonPath("$.message")
+                .isEqualTo("feed source request failed");
     }
 
     private void assertBadRequest(

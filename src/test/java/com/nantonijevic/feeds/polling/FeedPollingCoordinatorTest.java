@@ -8,6 +8,7 @@ import com.nantonijevic.feeds.domain.Feed;
 import com.nantonijevic.feeds.exception.FeedSourceBodyTooLargeException;
 import com.nantonijevic.feeds.exception.FeedSourceConnectionException;
 import com.nantonijevic.feeds.exception.FeedSourceHttpException;
+import com.nantonijevic.feeds.exception.FeedSourceRequestException;
 import com.nantonijevic.feeds.exception.FeedSourceTimeoutException;
 import com.nantonijevic.feeds.exception.InvalidFeedSourceException;
 import com.nantonijevic.feeds.exception.ItemPersistenceException;
@@ -826,6 +827,16 @@ class FeedPollingCoordinatorTest {
                         (Supplier<RuntimeException>) () ->
                                 new IllegalStateException(
                                         "unknown failure"
+                                )
+                )),
+                Arguments.of(Named.of(
+                        "unmapped feed source request failure",
+                        (Supplier<RuntimeException>) () ->
+                                new FeedSourceRequestException(
+                                        "feed source request failed",
+                                        new IllegalStateException(
+                                                "unknown source error"
+                                        )
                                 )
                 ))
         );

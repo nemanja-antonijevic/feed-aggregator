@@ -49,7 +49,8 @@ import static org.assertj.core.api.Assertions.assertThat;
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "feeds.stream.heartbeat-interval=40ms",
-                "feeds.stream.buffer-capacity=8"
+                "feeds.stream.buffer-capacity=8",
+                "feeds.source.allow-private-addresses=true"
         }
 )
 @AutoConfigureWebTestClient

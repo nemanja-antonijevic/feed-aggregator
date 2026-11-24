@@ -1,14 +1,18 @@
 package com.nantonijevic.feeds.client;
 
+import java.net.URI;
 import java.time.Duration;
 import java.util.concurrent.TimeoutException;
 
 import com.nantonijevic.feeds.exception.FeedSourceBodyTooLargeException;
 import com.nantonijevic.feeds.exception.FeedSourceConnectionException;
 import com.nantonijevic.feeds.exception.FeedSourceHttpException;
+import com.nantonijevic.feeds.exception.FeedSourceRequestException;
 import com.nantonijevic.feeds.exception.FeedSourceTimeoutException;
 import com.nantonijevic.feeds.exception.InvalidFeedSourceException;
 import io.netty.handler.timeout.ReadTimeoutException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.io.buffer.DataBufferLimitException;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -22,6 +26,8 @@ public class FeedSourceClient {
 
     private static final Duration REQUEST_TIMEOUT =
             Duration.ofSeconds(3);
+    private static final Logger LOGGER =
+            LoggerFactory.getLogger(FeedSourceClient.class);
 
     private final WebClient webClient;
 
@@ -30,8 +36,12 @@ public class FeedSourceClient {
     }
 
     public Mono<byte[]> fetch(String url) {
+        String escapedUrl = url.replace("{", "%7B")
+                .replace("}", "%7D");
+        URI requestUri = URI.create(escapedUrl);
+
         return webClient.get()
-                .uri(url)
+                .uri(requestUri)
                 .exchangeToMono(response -> {
                     int status = response.statusCode().value();
 
@@ -79,6 +89,12 @@ public class FeedSourceClient {
                         FeedSourceTimeoutException::new
                 )
                 .onErrorMap(
+                        exception -> exception
+                                instanceof WebClientRequestException
+                                && findInvalidSource(exception) != null,
+                        this::findInvalidSource
+                )
+                .onErrorMap(
                         exception ->
                                 exception
                                         instanceof WebClientRequestException
@@ -88,7 +104,41 @@ public class FeedSourceClient {
                                 new FeedSourceConnectionException(
                                         exception
                                 )
+                )
+                .onErrorMap(
+                        exception -> !isFeedSourceException(exception),
+                        exception -> {
+                            LOGGER.warn(
+                                    "Unmapped feed source exception type: {}",
+                                    exception.getClass().getName()
+                            );
+                            return new FeedSourceRequestException(
+                                    "feed source request failed",
+                                    exception
+                            );
+                        }
                 );
+    }
+
+    private boolean isFeedSourceException(Throwable exception) {
+        return exception instanceof FeedSourceRequestException
+                || exception instanceof FeedSourceTimeoutException
+                || exception instanceof InvalidFeedSourceException;
+    }
+
+    // The resolver refuses a blocked address; WebClient wraps that refusal.
+    private InvalidFeedSourceException findInvalidSource(Throwable throwable) {
+        Throwable current = throwable;
+
+        while (current != null) {
+            if (current instanceof InvalidFeedSourceException invalidSource) {
+                return invalidSource;
+            }
+
+            current = current.getCause();
+        }
+
+        return null;
     }
 
     private boolean hasReadTimeout(Throwable throwable) {

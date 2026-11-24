@@ -3,6 +3,8 @@ package com.nantonijevic.feeds.client;
 import com.nantonijevic.feeds.exception.FeedSourceBodyTooLargeException;
 import com.nantonijevic.feeds.exception.FeedSourceConnectionException;
 import com.nantonijevic.feeds.exception.FeedSourceHttpException;
+import com.nantonijevic.feeds.exception.FeedSourceRequestException;
+import com.nantonijevic.feeds.exception.InvalidFeedSourceException;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.buffer.DataBufferLimitException;
 import org.springframework.http.HttpHeaders;
@@ -18,6 +20,7 @@ import reactor.test.StepVerifier;
 
 import java.net.URI;
 import java.net.UnknownHostException;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -126,6 +129,80 @@ class FeedSourceClientTest {
                             .hasCause(cause);
                 })
                 .verify();
+    }
+
+    @Test
+    void mapsUnmappedExchangeExceptionToRequestFailureAndKeepsCause() {
+        IllegalStateException cause = new IllegalStateException(
+                "unexpected exchange failure"
+        );
+        FeedSourceClient client = clientFailingWith(cause);
+
+        StepVerifier.create(client.fetch("https://example.com/feed.xml"))
+                .expectErrorSatisfies(error -> {
+                    assertThat(error)
+                            .isInstanceOf(FeedSourceRequestException.class)
+                            .hasMessage("feed source request failed")
+                            .hasCause(cause);
+                })
+                .verify();
+    }
+
+    @Test
+    void returnsAlreadyMappedRequestExceptionAsTheSameInstance() {
+        FeedSourceConnectionException mapped =
+                new FeedSourceConnectionException(
+                        new IllegalStateException("already mapped")
+                );
+        FeedSourceClient client = clientFailingWith(mapped);
+
+        StepVerifier.create(client.fetch("https://example.com/feed.xml"))
+                .expectErrorSatisfies(error ->
+                        assertThat(error).isSameAs(mapped)
+                )
+                .verify();
+    }
+
+    @Test
+    void returnsBlockedAddressFromRequestExceptionAsInvalidFeedSource() {
+        InvalidFeedSourceException blocked = new InvalidFeedSourceException(
+                "feed source address is not allowed"
+        );
+        WebClientRequestException requestError =
+                new WebClientRequestException(
+                        blocked,
+                        HttpMethod.GET,
+                        URI.create("https://example.com/feed.xml"),
+                        HttpHeaders.EMPTY
+                );
+        FeedSourceClient client = clientFailingWith(requestError);
+
+        StepVerifier.create(client.fetch("https://example.com/feed.xml"))
+                .expectErrorSatisfies(error ->
+                        assertThat(error).isSameAs(blocked)
+                )
+                .verify();
+    }
+
+    @Test
+    void storedUriTemplateIsEscapedWithoutTemplateExpansion() {
+        AtomicReference<URI> requestedUri = new AtomicReference<>();
+        FeedSourceClient client = client(request -> {
+            requestedUri.set(request.url());
+            return Mono.just(
+                    ClientResponse.create(HttpStatusCode.valueOf(204)).build()
+            );
+        });
+
+        StepVerifier.create(
+                        client.fetch("https://example.com/{feed}/a%20b")
+                )
+                .verifyComplete();
+
+        assertThat(requestedUri.get())
+                .isEqualTo(URI.create(
+                        "https://example.com/%7Bfeed%7D/a%20b"
+                ));
     }
 
     private FeedSourceClient clientReturning(ClientResponse response) {
